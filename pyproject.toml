@@ -1,0 +1,53 @@
+[project]
+name = "voice-io-mcp"
+version = "0.1.0"
+description = "Text-to-speech and speech-to-text MCP server: Groq's free hosted endpoints first, fully local keyless fallback (Kokoro-82M / faster-whisper) if unavailable."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "litellm>=1.97.0",
+    "mcp[cli]>=2.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+# Fully local, keyless TTS fallback for text_to_speech. Not a base
+# dependency: Kokoro pulls in torch + transformers (~1GB+), too heavy to
+# force on every install just for a fallback path most calls with a
+# GROQ_API_KEY configured will never need. Enable with `uv sync --extra
+# local-tts`. Also needs the `espeak-ng` system package on PATH for full
+# quality on non-trivial or non-English text (optional; degrades gracefully
+# without it for straightforward English).
+local-tts = [
+    "kokoro>=0.9.4",
+    "soundfile>=0.12.1",
+]
+# Fully local, keyless STT fallback for speech_to_text. Not a base
+# dependency for the same reason - enable with `uv sync --extra local-stt`.
+local-stt = [
+    "faster-whisper>=1.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# This project is a single-file MCP server, not a Python package - without
+# this, setuptools' flat-layout auto-discovery breaks the moment a second
+# top-level directory exists (e.g. output/, once text_to_speech has run
+# once locally), since it can no longer tell which directory is "the
+# package". Declaring the one real module explicitly skips that discovery
+# entirely (the same fix nvidia-nim-mcp needed after hitting this live).
+py-modules = ["voice_io"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
