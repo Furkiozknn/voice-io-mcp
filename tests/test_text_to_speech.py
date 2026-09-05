@@ -1,19 +1,20 @@
 """text_to_speech: Groq's hosted playai-tts first, local Kokoro fallback if
 Groq fails or GROQ_API_KEY isn't set."""
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 import voice_io
 
 
 @pytest.mark.asyncio
 async def test_rejects_empty_text():
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(ToolError, match="empty"):
         await voice_io.text_to_speech(text="   ")
 
 
 @pytest.mark.asyncio
 async def test_rejects_invalid_output_format():
-    with pytest.raises(ValueError, match="output_format"):
+    with pytest.raises(ToolError, match="output_format"):
         await voice_io.text_to_speech(text="hello", output_format="ogg")
 
 
@@ -159,3 +160,15 @@ def test_local_text_to_speech_returns_false_when_dependency_missing(tmp_path):
     result = voice_io._local_text_to_speech("hello", tmp_path / "out.wav")
 
     assert result is False
+
+
+@pytest.mark.asyncio
+async def test_hosted_tts_call_is_bounded_by_a_timeout(groq_key, fake_aspeech, tmp_path, monkeypatch):
+    """litellm's own default is 600s; every real hosted call must pass an
+    explicit bound so a wedged provider can't hold the tool for 10 minutes."""
+    monkeypatch.setattr(voice_io, "OUTPUT_DIR", tmp_path)
+    mock = fake_aspeech(written_files=[])
+
+    await voice_io.text_to_speech(text="hello world")
+
+    assert mock.await_args.kwargs["timeout"] == voice_io.HOSTED_CALL_TIMEOUT
