@@ -30,6 +30,7 @@ from pathlib import Path
 import litellm
 from dotenv import load_dotenv
 from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 load_dotenv()
 
@@ -70,6 +71,12 @@ MAX_AUDIO_BYTES = 25 * 1024 * 1024
 # Short timeout for health probes specifically - these are meant to be a
 # quick "is it alive" check, not a real generation, so failing fast is correct.
 HEALTH_PROBE_TIMEOUT = 8.0
+
+# Passed to the real hosted TTS/STT calls. litellm's default is 600 seconds;
+# a wedged provider would otherwise hold the tool for ten minutes before the
+# local fallback even got a chance. Two minutes comfortably covers a 25MB
+# upload plus transcription on the free tier.
+HOSTED_CALL_TIMEOUT = 120.0
 
 _LOCAL_TTS_MODEL_NAME = "kokoro-82m"
 _KOKORO_LANG_CODE = "a"  # American English - must match the voice prefix (af_/am_)
@@ -254,10 +261,14 @@ async def text_to_speech(text: str, voice: str = DEFAULT_VOICE, output_format: s
             local fallback, which always uses Kokoro's "af_heart" voice.
         output_format: "mp3" or "wav". Only honored on the Groq tier.
     """
+    # ToolError, not ValueError: under mcp >= 2.1 a plain exception is
+    # treated as a crash and masked to a generic "Error executing tool ..."
+    # (verified against the installed SDK) - these two messages are designed
+    # for the caller and must arrive intact.
     if output_format not in ("mp3", "wav"):
-        raise ValueError(f"output_format must be 'mp3' or 'wav', got {output_format!r}")
+        raise ToolError(f"output_format must be 'mp3' or 'wav', got {output_format!r}")
     if not text.strip():
-        raise ValueError("text must not be empty")
+        raise ToolError("text must not be empty")
 
     OUTPUT_DIR.mkdir(exist_ok=True)
     stamp = _stamp()
@@ -268,7 +279,8 @@ async def text_to_speech(text: str, voice: str = DEFAULT_VOICE, output_format: s
         hosted_path = OUTPUT_DIR / f"speech_{stamp}.{output_format}"
         try:
             response = await litellm.aspeech(
-                model=TTS_MODEL, voice=voice, input=text, response_format=output_format, api_key=key
+                model=TTS_MODEL, voice=voice, input=text, response_format=output_format, api_key=key,
+                timeout=HOSTED_CALL_TIMEOUT,
             )
             # stream_to_file is a blocking disk write - run it off the event
             # loop like every other I/O call here, not inline in async def.
@@ -329,7 +341,10 @@ async def speech_to_text(audio_path: str, language: str | None = None) -> str:
             # Reading the file is a blocking disk read - run it off the
             # event loop, same rule as the TTS write above.
             audio_file = await asyncio.to_thread(_read_audio_file, path)
-            response = await litellm.atranscription(model=STT_MODEL, file=audio_file, language=language, api_key=key)
+            response = await litellm.atranscription(
+                model=STT_MODEL, file=audio_file, language=language, api_key=key,
+                timeout=HOSTED_CALL_TIMEOUT,
+            )
             return f"{response.text}\n\n(model: {STT_MODEL})"
         except Exception as e:
             groq_error = _redact(str(e), key)

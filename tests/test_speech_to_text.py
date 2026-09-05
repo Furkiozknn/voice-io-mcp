@@ -113,3 +113,14 @@ def test_local_speech_to_text_returns_none_when_dependency_missing(sample_audio)
     result = voice_io._local_speech_to_text(sample_audio)
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_hosted_stt_call_is_bounded_by_a_timeout(groq_key, fake_atranscription, tmp_path):
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"fake-mp3")
+    mock = fake_atranscription(text="hi")
+
+    await voice_io.speech_to_text(str(audio))
+
+    assert mock.await_args.kwargs["timeout"] == voice_io.HOSTED_CALL_TIMEOUT
