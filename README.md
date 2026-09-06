@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/banner.svg" alt="voice-io-mcp - hosted speech endpoints first, a fully local model when they are not" width="100%">
+
 # voice-io-mcp
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-76b900?style=flat-square)](LICENSE)
