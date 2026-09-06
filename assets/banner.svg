@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" width="1200" height="320" role="img" aria-label="voice-io-mcp - text to speech and speech to text with a hosted-first, local fallback chain">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0d1117"/>
+      <stop offset="55%" stop-color="#171331"/>
+      <stop offset="100%" stop-color="#0d1a24"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#a371f7"/>
+      <stop offset="50%" stop-color="#4c8dff"/>
+      <stop offset="100%" stop-color="#39d3bb"/>
+    </linearGradient>
+    <linearGradient id="markAccent" gradientUnits="userSpaceOnUse" x1="72" y1="108" x2="146" y2="190">
+      <stop offset="0%" stop-color="#a371f7"/>
+      <stop offset="60%" stop-color="#4c8dff"/>
+      <stop offset="100%" stop-color="#39d3bb"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#a371f7" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#a371f7" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="320" fill="url(#bg)"/>
+  <circle cx="960" cy="150" r="230" fill="url(#glow)"/>
+  <rect x="0" y="0" width="1200" height="4" fill="url(#accent)"/>
+
+  <g>
+    <g fill="#b394f7">
+      <rect x="812" y="140" width="6" height="24" rx="3"/><rect x="826" y="126" width="6" height="52" rx="3"/>
+      <rect x="840" y="110" width="6" height="84" rx="3"/><rect x="854" y="132" width="6" height="40" rx="3"/>
+      <rect x="868" y="120" width="6" height="64" rx="3"/><rect x="882" y="144" width="6" height="16" rx="3"/>
+    </g>
+    <path d="M902 152 L946 152" stroke="#a371f7" stroke-width="2"/>
+    <path d="M946 152 l-9 -5 l0 10 Z" fill="#a371f7"/>
+    <g transform="translate(958,108)">
+      <rect width="190" height="90" rx="10" fill="#141026" stroke="#4a3b7a" stroke-width="1.6"/>
+      <g fill="#6f7c93"><rect x="16" y="22" width="150" height="7" rx="3.5"/><rect x="16" y="42" width="126" height="7" rx="3.5"/><rect x="16" y="62" width="96" height="7" rx="3.5"/></g>
+    </g>
+    <g stroke="#39d3bb" stroke-width="1.8" fill="none" stroke-dasharray="5 4">
+      <path d="M1052 210 Q940 246 866 206"/>
+    </g>
+    <path d="M866 206 l10 1 l-5 -8 Z" fill="#39d3bb"/>
+    <text x="958" y="238" font-family="ui-monospace, monospace" font-size="12" fill="#56d4b4">local fallback</text>
+  </g>
+
+  <g transform="translate(72,108)" fill="none" stroke="url(#markAccent)" stroke-width="7" stroke-linecap="round">
+    <path d="M12 26 L12 54"/>
+    <path d="M30 12 L30 68"/>
+    <path d="M48 22 L48 58"/>
+    <path d="M66 34 L66 46"/>
+  </g>
+
+  <text x="176" y="128" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="46" font-weight="700" fill="#e6edf3">voice-io-mcp</text>
+  <text x="178" y="172" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="23" fill="#8b98a9">Hosted endpoints first, a fully local model when they are not.</text>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14.5" font-weight="600">
+    <g transform="translate(178,204)">
+      <rect width="152" height="34" rx="17" fill="#1c1730" stroke="#4a3b7a"/>
+      <text x="76" y="22" text-anchor="middle" fill="#b394f7">Groq hosted first</text>
+    </g>
+    <g transform="translate(344,204)">
+      <rect width="182" height="34" rx="17" fill="#0f2a24" stroke="#1f6f5c"/>
+      <text x="91" y="22" text-anchor="middle" fill="#56d4b4">local keyless fallback</text>
+    </g>
+    <g transform="translate(540,204)">
+      <rect width="183" height="34" rx="17" fill="#0f2130" stroke="#1f4f7a"/>
+      <text x="91" y="22" text-anchor="middle" fill="#6cb6ff">extension + size caps</text>
+    </g>
+  </g>
+
+  <text x="178" y="272" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#5c6b7f">35 tests &#183; Whisper &#183; Kokoro &#183; secrets redacted from errors &#183; MIT</text>
+</svg>
