@@ -39,16 +39,6 @@ Every other tool in this ecosystem's [nvidia-nim-mcp](https://github.com/Furkioz
 
 <img src="assets/fallback-chain.svg" alt="Both tools try their Groq tier first only when GROQ_API_KEY is set, and drop to a fully local model - Kokoro-82M for speech, faster-whisper for transcription - when it is unset or the hosted call fails, so the server works with no API keys at all. Transcription rejects unknown extensions and files over 25 MB before reading them." width="100%">
 
-```
-text_to_speech(text)
-  ├─ 1. Groq playai-tts        (needs GROQ_API_KEY — free, no credit card)
-  └─ 2. Kokoro-82M, local      (needs `uv sync --extra local-tts` — no key, no network)
-
-speech_to_text(audio_path)
-  ├─ 1. Groq whisper-large-v3-turbo   (needs GROQ_API_KEY)
-  └─ 2. faster-whisper, local          (needs `uv sync --extra local-stt`)
-```
-
 Both tools try Groq first *only if* `GROQ_API_KEY` is set in `.env` — if it isn't, or if the Groq call fails for any reason, they drop straight to the local model. **This is the one meaningful difference from nvidia-nim-mcp's own pattern: every tool here works with zero API keys configured at all**, as long as the relevant optional extra is installed — a hosted key is a speed/quality upgrade, not a hard requirement.
 
 The local tiers are genuinely last-resort: Kokoro always writes a `.wav` file regardless of the requested `output_format` (its native output; encoding straight to mp3 depends on the local `libsndfile` build, which isn't guaranteed cross-platform), and the tool's return message says so explicitly rather than silently substituting formats.
