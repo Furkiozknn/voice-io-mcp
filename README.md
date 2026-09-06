@@ -37,6 +37,8 @@ Every other tool in this ecosystem's [nvidia-nim-mcp](https://github.com/Furkioz
 
 ## 🔄 The fallback chain
 
+<img src="assets/fallback-chain.svg" alt="Both tools try their Groq tier first only when GROQ_API_KEY is set, and drop to a fully local model - Kokoro-82M for speech, faster-whisper for transcription - when it is unset or the hosted call fails, so the server works with no API keys at all. Transcription rejects unknown extensions and files over 25 MB before reading them." width="100%">
+
 ```
 text_to_speech(text)
   ├─ 1. Groq playai-tts        (needs GROQ_API_KEY — free, no credit card)
@@ -122,6 +124,8 @@ uv run pytest
 The suite (`tests/`) mocks every `litellm` call — no `GROQ_API_KEY` or real network access needed. It also exercises the *real*, unmocked local-fallback code paths against this repo's base test environment (where `kokoro`/`faster-whisper` are deliberately not installed, being optional extras), confirming both fallbacks fail closed — returning `False`/`None`, never raising — when their dependency is absent. CI (`.github/workflows/ci.yml`) runs the same command on every push/PR.
 
 ## 🚧 Known limitations / roadmap
+
+<img src="assets/scope.svg" alt="What v1 deliberately leaves out: voice cloning, because it is the most misuse-prone capability here and would need a mandatory consent step and audio watermarking to ship responsibly; and what is simply not wired yet with reasons given - Groq's Gemini-Flash tier, whose free tier is non-commercial and whose request shape was unverified, and streaming output." width="100%">
 
 - **Voice cloning is deliberately out of scope for v1.** Kokoro's own upstream ecosystem and other open models (e.g. Chatterbox) support zero-shot voice cloning from a few seconds of reference audio — genuinely useful, but also the most misuse-prone capability in this space. If it's added later, it should ship with a mandatory consent-confirmation step and audio watermarking (Chatterbox bundles [Perth](https://github.com/resemble-ai/chatterbox), a watermarker, for exactly this reason) — not as an afterthought.
 - **Groq's Gemini-Flash TTS tier was researched but not wired in.** Its free tier exists but is restricted to non-commercial/personal use per Google's terms, and its request/response shape wasn't verified during this build — a clean second hosted fallback tier to add later once both are confirmed.
