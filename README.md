@@ -23,6 +23,7 @@ Every other tool in this ecosystem's [nvidia-nim-mcp](https://github.com/Furkioz
 - [Example usage](#-example-usage)
 - [Architecture](#-architecture)
 - [Development](#-development)
+- [Testing](#-testing)
 - [Known limitations](#-known-limitations--roadmap)
 - [License](#-license)
 
@@ -53,13 +54,16 @@ The local tiers are genuinely last-resort: Kokoro always writes a `.wav` file re
 uv sync
 ```
 
-**2. (Optional) Enable Groq's hosted tier.** Create a `.env` file in the project root:
+**2. (Optional) Enable Groq's hosted tier.** Copy `.env.example` to `.env` in the project root and fill it in:
 
 ```bash
-GROQ_API_KEY=your-key-here
+cp .env.example .env
+# GROQ_API_KEY=your-key-here
 ```
 
 Get one free at [console.groq.com/keys](https://console.groq.com/keys) — no credit card. Without it, both tools go straight to their local fallback.
+
+`.env.example` also documents `VOICE_IO_OUTPUT_DIR`, which controls where generated audio is written. It defaults to `output/` **under the directory the server is started in** — never inside the installed package, so a `pip install`ed copy never writes into `site-packages`.
 
 **3. (Optional) Enable the local fallbacks** — each is an independent extra, install either or both:
 
@@ -108,10 +112,19 @@ Single-file MCP server (`voice_io.py`), same shape as `nvidia-nim-mcp`'s `nvidia
 
 ```bash
 uv sync --group dev
-uv run pytest
 ```
 
-The suite (`tests/`) mocks every `litellm` call — no `GROQ_API_KEY` or real network access needed. It also exercises the *real*, unmocked local-fallback code paths against this repo's base test environment (where `kokoro`/`faster-whisper` are deliberately not installed, being optional extras), confirming both fallbacks fail closed — returning `False`/`None`, never raising — when their dependency is absent. CI (`.github/workflows/ci.yml`) runs the same command on every push/PR.
+## 🧪 Testing
+
+```bash
+uv run pytest                              # the whole suite
+uv run pytest tests/test_speech_to_text.py # one module
+uv run pytest -q -rs                       # quiet, with skip reasons
+```
+
+The suite (`tests/`) mocks every `litellm` call — no `GROQ_API_KEY` or real network access needed, and nothing in it touches the network. It also exercises the *real*, unmocked local-fallback code paths against this repo's base test environment (where `kokoro`/`faster-whisper` are deliberately not installed, being optional extras), confirming both fallbacks fail closed — returning `False`/`None`, never raising — when their dependency is absent. Two tests skip when those optional extras *are* installed; a skip there is expected, not a failure. CI (`.github/workflows/ci.yml`) runs `uv run pytest` on every push/PR.
+
+**Error contract under test:** invalid *input* (empty text, unknown `output_format`, a missing/non-audio/oversized file) raises `ToolError` from both tools; a tier that merely *failed* (Groq unreachable, no local extra installed) returns a plain descriptive string. The tests assert both halves so the two tools can't drift apart again.
 
 ## 🚧 Known limitations / roadmap
 
