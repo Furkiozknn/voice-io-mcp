@@ -38,7 +38,12 @@ logger = logging.getLogger(__name__)
 
 mcp = MCPServer("voice-io")
 
-OUTPUT_DIR = Path(__file__).parent / "output"
+# Where generated audio lands. Deliberately NOT `Path(__file__).parent`:
+# for anyone who `pip install`s this server that directory is inside
+# site-packages, which is read-only on many installs and pollutes the
+# environment on the rest. Default to a directory under the process's
+# current working directory instead, overridable with VOICE_IO_OUTPUT_DIR.
+OUTPUT_DIR = Path(os.environ.get("VOICE_IO_OUTPUT_DIR") or Path.cwd() / "output")
 
 GROQ_API_KEY_ENV = "GROQ_API_KEY"
 
@@ -270,7 +275,7 @@ async def text_to_speech(text: str, voice: str = DEFAULT_VOICE, output_format: s
     if not text.strip():
         raise ToolError("text must not be empty")
 
-    OUTPUT_DIR.mkdir(exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     stamp = _stamp()
 
     key = os.environ.get(GROQ_API_KEY_ENV)
@@ -317,22 +322,35 @@ async def speech_to_text(audio_path: str, language: str | None = None) -> str:
             ogg/webm/mp4/mpeg/mpga), max 25MB.
         language: Optional ISO-639-1 language hint (e.g. "en"). Ignored by
             the local fallback, which auto-detects language.
+
+    Raises:
+        ToolError: if the path does not exist, is not a recognized audio
+            format, or exceeds the 25MB upload limit - the same contract
+            text_to_speech uses for its own invalid arguments.
     """
+    # ToolError, not a plain return string: bad input is the same class of
+    # failure text_to_speech already raises ToolError for, and the two tools
+    # must not disagree about how an invalid argument is reported. A tier
+    # that merely failed (Groq down, no local extra) still returns a string -
+    # that is a result, not a caller mistake.
     path = Path(audio_path)
     if not path.is_file():
-        return f"File not found: {audio_path}"
+        raise ToolError(f"File not found: {audio_path}")
     # This tool reads whatever local file it's pointed at and uploads its
     # bytes to Groq (a third party) - an extension allow-list and size cap
     # up front stop it from being turned into a generic "read and exfiltrate
     # an arbitrary file" primitive by a wrong or maliciously-crafted path.
     if path.suffix.lower() not in ALLOWED_AUDIO_EXTENSIONS:
-        return (
+        raise ToolError(
             f"Rejected: {path.suffix or '(no extension)'} is not a recognized audio format "
             f"(expected one of {sorted(ALLOWED_AUDIO_EXTENSIONS)})"
         )
     size = path.stat().st_size
     if size > MAX_AUDIO_BYTES:
-        return f"Rejected: file is {size / (1024 * 1024):.1f}MB, exceeds the {MAX_AUDIO_BYTES // (1024 * 1024)}MB limit"
+        raise ToolError(
+            f"Rejected: file is {size / (1024 * 1024):.1f}MB, exceeds the "
+            f"{MAX_AUDIO_BYTES // (1024 * 1024)}MB limit"
+        )
 
     key = os.environ.get(GROQ_API_KEY_ENV)
     groq_error = None
@@ -395,12 +413,12 @@ async def check_provider_health() -> str:
 
 
 def main() -> None:
-    """Konsol giris noktasi.
+    """Console entry point.
 
-    Ayri bir fonksiyon, cunku `[project.scripts]` bir modul degil bir
-    CAGRILABILIR istiyor. Bu olmadan paket kurulabiliyor ama
-    calistirilamiyor: kullanicinin depoyu klonlayip dosyaya yol
-    gostermesi gerekiyor, ki bu da yayinlamanin amacini bosa cikariyor.
+    A separate function because `[project.scripts]` wants a CALLABLE, not a
+    module. Without it the package installs but cannot be run: the user
+    would have to clone the repo and point at the file directly, which
+    defeats the point of publishing it.
     """
     mcp.run(transport="stdio")
 
