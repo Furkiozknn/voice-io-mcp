@@ -126,6 +126,22 @@ The suite (`tests/`) mocks every `litellm` call — no `GROQ_API_KEY` or real ne
 
 **Error contract under test:** invalid *input* (empty text, unknown `output_format`, a missing/non-audio/oversized file) raises `ToolError` from both tools; a tier that merely *failed* (Groq unreachable, no local extra installed) returns a plain descriptive string. The tests assert both halves so the two tools can't drift apart again.
 
+## What this server can actually do
+
+The expensive question about an MCP server is not what it promises but what it
+**can do on your machine**: which credentials it can touch, where it connects,
+what it runs. Answering that means reading the source, and most people will not.
+
+On every push, [mcp-vet](https://github.com/Furkiozknn/mcp-vet) from the same
+account audits this server from source and writes the whole report into the job
+summary. Today's verdict: **NOT_FLAGGED** (no finding sets the verdict). The gate closes at HIGH and
+above — and it also closes if the tool itself could not run, because "I could not
+look" should not read as green.
+
+Auditing our own server with our own tool had a side effect worth recording: adding
+this job surfaced a real false positive in mcp-vet, which was fixed. A tool nobody
+runs stays right by default.
+
 ## 🚧 Known limitations / roadmap
 
 <img src="assets/scope.svg" alt="What v1 deliberately leaves out: voice cloning, because it is the most misuse-prone capability here and would need a mandatory consent step and audio watermarking to ship responsibly; and what is simply not wired yet with reasons given - Groq's Gemini-Flash tier, whose free tier is non-commercial and whose request shape was unverified, and streaming output." width="100%">
