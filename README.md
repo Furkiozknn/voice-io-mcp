@@ -138,3 +138,14 @@ The suite (`tests/`) mocks every `litellm` call — no `GROQ_API_KEY` or real ne
 ## 📄 License
 
 MIT — see [LICENSE](LICENSE). Kokoro-82M's weights are Apache-2.0; faster-whisper is MIT. Neither is vendored in this repo — both are optional dependencies, fetched from their own sources on install/first-use.
+
+---
+
+## More from this ecosystem
+
+- **[mini-creative-toolkit](https://github.com/Furkiozknn/mini-creative-toolkit)** — 23 CPU-first media tools behind one MCP server
+- **[local-notes-search-mcp](https://github.com/Furkiozknn/local-notes-search-mcp)** — ask your own files a question, with no network
+- **[nvidia-nim-mcp](https://github.com/Furkiozknn/nvidia-nim-mcp)** — seven MCP tools on NVIDIA NIM's free tier
+- **[mcp-vet](https://github.com/Furkiozknn/mcp-vet)** — audits an MCP server's source before you install it
+
+<sub>All of them in one searchable page: **[furkiozknn.github.io](https://furkiozknn.github.io/)** — each card is generated from that repository's own <code>project-meta.json</code>.</sub>
