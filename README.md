@@ -149,3 +149,5 @@ MIT — see [LICENSE](LICENSE). Kokoro-82M's weights are Apache-2.0; faster-whis
 - **[mcp-vet](https://github.com/Furkiozknn/mcp-vet)** — audits an MCP server's source before you install it
 
 <sub>All of them in one searchable page: **[furkiozknn.github.io](https://furkiozknn.github.io/)** — each card is generated from that repository's own <code>project-meta.json</code>.</sub>
+
+<!-- mcp-name: io.github.Furkiozknn/voice-io-mcp -->
