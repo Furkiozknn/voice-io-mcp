@@ -23,6 +23,7 @@ import io
 import logging
 import os
 import stat
+import sys
 import threading
 import uuid
 import wave
@@ -114,6 +115,23 @@ _local_stt_model = None  # lazy singleton
 _local_stt_lock = threading.Lock()
 
 
+def _flush_stray_stdout() -> None:
+    """Push out anything local-model code print()ed, while it can still do
+    no harm.
+
+    Serving stdio, the MCP transport points fd 1 at stderr and keeps a
+    private copy for the protocol, so a stray print is harmless - once it
+    leaves Python's buffer. Kokoro's phonemizer (misaki) has a bare
+    `print('❌', 'TODO:NUM', ...)`, and under a pipe that line sits in the
+    buffer until interpreter exit, i.e. after the transport has pointed fd 1
+    back at the client, and lands in the protocol stream. Flushing at the
+    end of every local call sends it to stderr instead."""
+    try:
+        sys.stdout.flush()
+    except (AttributeError, OSError, ValueError):
+        pass
+
+
 def _local_text_to_speech(text: str, filepath: Path, voice: str = "af_heart") -> bool:
     """Fully local, keyless TTS fallback via Kokoro-82M. Weights auto-download
     from Hugging Face Hub on first use (~300MB) - only used if Groq's hosted
@@ -159,6 +177,8 @@ def _local_text_to_speech(text: str, filepath: Path, voice: str = "af_heart") ->
     except Exception as e:
         logger.warning("local TTS fallback unavailable: %s", e)
         return False
+    finally:
+        _flush_stray_stdout()
 
 
 def _local_speech_to_text(audio: str | io.BytesIO) -> str | None:
@@ -182,6 +202,8 @@ def _local_speech_to_text(audio: str | io.BytesIO) -> str | None:
     except Exception as e:
         logger.warning("local STT fallback unavailable: %s", e)
         return None
+    finally:
+        _flush_stray_stdout()
 
 
 def _stamp() -> str:

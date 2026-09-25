@@ -22,23 +22,43 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 
-# Stand-in for a noisy local model: prints through Python *and* writes to
-# fd 1 directly (what a C extension would do), then reports failure.
+# The real _local_text_to_speech / _local_speech_to_text run, but against
+# stand-in model packages that print through Python *and* write to fd 1
+# directly (what a C extension would do), then produce nothing.
 _SERVER = """
-import os, voice_io
+import os, sys, types
 
-def noisy_local_tts(text, filepath, voice="af_heart"):
-    print("TODO:NUM stray print from a local model")
-    os.write(1, b"raw fd-1 write from native code\\n")
-    return False
+def noise(who):
+    print(f"TODO:NUM stray print from {who}")
+    os.write(1, f"raw fd-1 write from {who}\\n".encode())
 
-voice_io._local_text_to_speech = noisy_local_tts
+class KPipeline:
+    def __init__(self, lang_code):
+        pass
+    def __call__(self, text, **kwargs):
+        noise("kokoro")
+        return iter(())
+
+class WhisperModel:
+    def __init__(self, *args, **kwargs):
+        pass
+    def transcribe(self, audio):
+        noise("faster-whisper")
+        raise RuntimeError("no model here")
+
+for name, attrs in {"numpy": {}, "soundfile": {}, "kokoro": {"KPipeline": KPipeline},
+                    "faster_whisper": {"WhisperModel": WhisperModel}}.items():
+    sys.modules[name] = types.SimpleNamespace(**attrs)
+
+import voice_io
 voice_io.main()
 """
 
 
 def _session(requests, env_extra, timeout=60):
-    env = {k: v for k, v in os.environ.items() if k != "GROQ_API_KEY"}
+    # PYTHONUNBUFFERED would flush every print at once and hide the bug this
+    # file exists for: MCP clients start servers with a buffered stdout.
+    env = {k: v for k, v in os.environ.items() if k not in ("GROQ_API_KEY", "PYTHONUNBUFFERED")}
     env.update(env_extra)
     proc = subprocess.Popen(
         [sys.executable, "-c", _SERVER],
@@ -86,21 +106,31 @@ _INIT = [
 
 @pytest.mark.skipif(sys.platform == "win32", reason="fd-level stdout diversion is exercised on POSIX")
 def test_stray_output_from_a_local_model_never_reaches_the_protocol_stream(tmp_path):
+    audio = tmp_path / "clip.wav"
+    audio.write_bytes(b"RIFF....WAVE")
     lines, stderr = _session(
-        _INIT + [{"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                  "params": {"name": "text_to_speech", "arguments": {"text": "Costs $5."}}}],
+        _INIT + [
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+             "params": {"name": "text_to_speech", "arguments": {"text": "Costs $5."}}},
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+             "params": {"name": "speech_to_text", "arguments": {"audio_path": str(audio)}}},
+        ],
         {"VOICE_IO_OUTPUT_DIR": str(tmp_path)},
     )
 
-    messages = [json.loads(line) for line in lines]  # raises on any non-JSON line
-    assert [m.get("id") for m in messages] == [1, 2]
-    assert "TODO:NUM stray print" in stderr
-    assert "raw fd-1 write" in stderr
+    # Every line, including anything written at shutdown, must be JSON-RPC.
+    messages = [json.loads(line) for line in lines]
+    assert sorted(m.get("id") for m in messages) == [1, 2, 3]
+    for who in ("kokoro", "faster-whisper"):
+        assert f"TODO:NUM stray print from {who}" in stderr
+        assert f"raw fd-1 write from {who}" in stderr
 
-    result = messages[1]["result"]
-    assert result["isError"] is True
-    assert "Text-to-speech failed" in result["content"][0]["text"]
-    assert "GROQ_API_KEY not set" in result["content"][0]["text"]
+    by_id = {m["id"]: m["result"] for m in messages}
+    assert by_id[2]["isError"] is True
+    assert "Text-to-speech failed" in by_id[2]["content"][0]["text"]
+    assert "GROQ_API_KEY not set" in by_id[2]["content"][0]["text"]
+    assert by_id[3]["isError"] is True
+    assert "Speech-to-text failed" in by_id[3]["content"][0]["text"]
 
 
 def test_bad_input_arrives_as_the_designed_message_not_a_masked_crash(tmp_path):
