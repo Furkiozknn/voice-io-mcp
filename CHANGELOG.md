@@ -1,10 +1,9 @@
 # Changelog
 
 All notable changes to this project are recorded here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
-[Semantic Versioning](https://semver.org/). The version here must match
-`pyproject.toml` and `server.json`; the release workflow refuses a tag that
-does not.
+Keep a Changelog 1.1.0, and versions follow Semantic Versioning. The version
+here must match `pyproject.toml` and `server.json`; the release workflow
+refuses a tag that does not.
 
 ## [0.1.0] - 2026-09-25
 
