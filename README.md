@@ -31,9 +31,9 @@ Every other tool in this ecosystem's [nvidia-nim-mcp](https://github.com/Furkioz
 
 | Tool | What it does | Hosted tier (Groq, free) | Local fallback |
 |---|---|---|---|
-| 🔊 `text_to_speech` | Text → audio file, saved to `output/` | `playai-tts` | Kokoro-82M (Apache-2.0) |
+| 🔊 `text_to_speech` | Text → audio file, saved to `output/` | Orpheus (`canopylabs/orpheus-v1-english`) | Kokoro-82M (Apache-2.0) |
 | 🎙️ `speech_to_text` | Audio file → transcript (rejects non-audio extensions and files over 25MB before ever reading them) | `whisper-large-v3-turbo` | faster-whisper (MIT) |
-| 🗣️ `list_voices` | List known Groq PlayAI voice names for `text_to_speech`'s `voice` argument | — (static list) | — |
+| 🗣️ `list_voices` | List known Groq Orpheus voice names for `text_to_speech`'s `voice` argument | — (static list) | — |
 | 🩺 `check_provider_health` | Liveness probe for both hosted endpoints + local-dependency availability check | both | both |
 
 ## 🔄 The fallback chain
@@ -42,9 +42,13 @@ Every other tool in this ecosystem's [nvidia-nim-mcp](https://github.com/Furkioz
 
 Both tools try Groq first *only if* `GROQ_API_KEY` is set in `.env` — if it isn't, or if the Groq call fails for any reason, they drop straight to the local model. **This is the one meaningful difference from nvidia-nim-mcp's own pattern: every tool here works with zero API keys configured at all**, as long as the relevant optional extra is installed — a hosted key is a speed/quality upgrade, not a hard requirement.
 
-The local tiers are genuinely last-resort: Kokoro always writes a `.wav` file regardless of the requested `output_format` (its native output; encoding straight to mp3 depends on the local `libsndfile` build, which isn't guaranteed cross-platform), and the tool's return message says so explicitly rather than silently substituting formats.
+Both tiers write `.wav`: Orpheus answers in WAV only, and so does Kokoro (encoding straight to mp3 depends on the local `libsndfile` build, which isn't guaranteed cross-platform). `output_format="mp3"` is still accepted for compatibility, and the tool's return message says it was answered with `.wav` rather than silently substituting formats.
 
-**On model names:** `playai-tts` and `whisper-large-v3-turbo` follow Groq's public API documentation, but neither was live-verified with a real key while building this repo (no key was available in the build environment). Run `check_provider_health` once `GROQ_API_KEY` is set to confirm they're still current — Groq's free-tier model lineup shifts over time, the same "don't trust a name from memory" discipline `nvidia-nim-mcp` documents for its own model list.
+Orpheus also takes at most **200 characters per request**. Longer text is split at sentence ends (then at spaces), sent as several requests, and the WAV parts are joined into one file with the standard library's `wave` module — mind the free tier's per-minute request allowance for long passages. If any piece fails, the whole call drops to the local model; no half-spoken file is left behind.
+
+**Groq retired `playai-tts`** (deprecation announced 23 December 2025) in favour of Canopy Labs' Orpheus; this server moved with it. The PlayAI voice names (`Fritz-PlayAI`, …) no longer exist — use `list_voices` for the Orpheus ones (`autumn`, `diana`, `hannah`, `austin`, `daniel`, `troy`; default `hannah`).
+
+**On model names:** `canopylabs/orpheus-v1-english` and `whisper-large-v3-turbo` follow Groq's public API documentation, but neither was live-verified with a real key while building this repo (no key was available in the build environment). Run `check_provider_health` once `GROQ_API_KEY` is set to confirm they're still current — Groq's free-tier model lineup shifts over time, the same "don't trust a name from memory" discipline `nvidia-nim-mcp` documents for its own model list.
 
 ## ⚙️ Setup
 
@@ -80,19 +84,19 @@ uv sync --extra local-stt   # faster-whisper
 claude mcp add --transport stdio voice-io -- uv run --project /path/to/this/repo voice_io.py
 ```
 
-**5. Run `check_provider_health` once, after setting `GROQ_API_KEY`.** The model/voice names this server wires in (`playai-tts`, `whisper-large-v3-turbo`) were transcribed from Groq's public docs but never live-verified with a real key while building this — confirm they're still current before relying on the hosted tier, the same "don't trust a name from memory" discipline `nvidia-nim-mcp` documents for its own model list. If a name has drifted, the local fallback still works regardless (once its extra is installed).
+**5. Run `check_provider_health` once, after setting `GROQ_API_KEY`.** The model/voice names this server wires in (`canopylabs/orpheus-v1-english`, `whisper-large-v3-turbo`) were transcribed from Groq's public docs but never live-verified with a real key while building this — confirm they're still current before relying on the hosted tier, the same "don't trust a name from memory" discipline `nvidia-nim-mcp` documents for its own model list. If a name has drifted, the local fallback still works regardless (once its extra is installed).
 
 ## ▶️ Example usage
 
 ```
 "Read this changelog entry out loud"
-→ text_to_speech  → saved to output/speech_20260901_120000.mp3 (model: groq/playai-tts)
+→ text_to_speech  → saved to output/speech_20260901_120000.wav (model: groq/canopylabs/orpheus-v1-english)
 
 "Transcribe this voice memo at C:\Users\me\Desktop\note.wav"
 → speech_to_text  → returns the transcript (model: groq/whisper-large-v3-turbo)
 
 "What voices can I use for text_to_speech?"
-→ list_voices     → returns the known Groq PlayAI voice names, one per line
+→ list_voices     → returns the known Groq Orpheus voice names, one per line
 
 "Is voice-io's Groq connection actually working right now?"
 → check_provider_health → per-endpoint OK/FAIL report, plus whether the local
@@ -149,7 +153,8 @@ runs stays right by default.
 - **Voice cloning is deliberately out of scope for v1.** Kokoro's own upstream ecosystem and other open models (e.g. Chatterbox) support zero-shot voice cloning from a few seconds of reference audio — genuinely useful, but also the most misuse-prone capability in this space. If it's added later, it should ship with a mandatory consent-confirmation step and audio watermarking (Chatterbox bundles [Perth](https://github.com/resemble-ai/chatterbox), a watermarker, for exactly this reason) — not as an afterthought.
 - **Groq's Gemini-Flash TTS tier was researched but not wired in.** Its free tier exists but is restricted to non-commercial/personal use per Google's terms, and its request/response shape wasn't verified during this build — a clean second hosted fallback tier to add later once both are confirmed.
 - **No streaming.** Both tools return a complete file/transcript, not a chunked stream — fine for short clips and voice memos, a real limitation for long-form audio.
-- **Kokoro's local fallback always emits `.wav`, ignoring `output_format`** (see [The fallback chain](#-the-fallback-chain)) — a deliberate cross-platform-safety tradeoff, not an oversight.
+- **Output is always `.wav`**, on both tiers (see [The fallback chain](#-the-fallback-chain)) — Orpheus offers nothing else, and Kokoro skips mp3 encoding as a deliberate cross-platform-safety tradeoff.
+- **Long text costs several hosted requests** — one per 200 characters, against the free tier's per-minute allowance.
 
 ## 📄 License
 

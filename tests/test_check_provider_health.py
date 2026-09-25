@@ -9,7 +9,7 @@ import voice_io
 async def test_reports_not_configured_when_no_groq_key(no_groq_key):
     report = await voice_io.check_provider_health()
 
-    assert "FAIL groq/playai-tts - not configured" in report
+    assert "FAIL groq/canopylabs/orpheus-v1-english - not configured" in report
     assert "FAIL groq/whisper-large-v3-turbo - not configured" in report
 
 
@@ -20,7 +20,7 @@ async def test_reports_ok_when_groq_probes_succeed(groq_key, fake_aspeech, fake_
 
     report = await voice_io.check_provider_health()
 
-    assert "OK  groq/playai-tts - ok" in report or "OK groq/playai-tts - ok" in report
+    assert "OK  groq/canopylabs/orpheus-v1-english - ok" in report or "OK groq/canopylabs/orpheus-v1-english - ok" in report
     assert "OK  groq/whisper-large-v3-turbo - ok" in report or "OK groq/whisper-large-v3-turbo - ok" in report
 
 
@@ -31,7 +31,7 @@ async def test_isolates_tts_probe_failure_from_stt_probe(groq_key, fake_aspeech,
 
     report = await voice_io.check_provider_health()
 
-    assert "FAIL groq/playai-tts - error: tts down" in report
+    assert "FAIL groq/canopylabs/orpheus-v1-english - error: tts down" in report
     assert "OK  groq/whisper-large-v3-turbo - ok" in report or "OK groq/whisper-large-v3-turbo - ok" in report
 
 
