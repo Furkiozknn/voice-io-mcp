@@ -1,4 +1,4 @@
-"""text_to_speech: Groq's hosted playai-tts first, local Kokoro fallback if
+"""text_to_speech: Groq's hosted Orpheus first, local Kokoro fallback if
 Groq fails or GROQ_API_KEY isn't set."""
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
@@ -26,9 +26,10 @@ async def test_succeeds_via_groq(groq_key, fake_aspeech, tmp_path, monkeypatch):
 
     result = await voice_io.text_to_speech(text="hello world")
 
-    assert "model: groq/playai-tts" in result
+    assert "model: groq/canopylabs/orpheus-v1-english" in result
+    assert "requested format ignored" not in result
     assert len(written) == 1
-    assert written[0].endswith(".mp3")
+    assert written[0].endswith(".wav")
 
 
 @pytest.mark.asyncio
@@ -42,13 +43,13 @@ async def test_falls_back_to_local_when_groq_fails(groq_key, fake_aspeech, tmp_p
     result = await voice_io.text_to_speech(text="hello world")
 
     assert "model: local:kokoro-82m" in result
-    assert "requested format ignored" in result  # default output_format is mp3
+    assert "requested format ignored" not in result  # default output_format is wav
     saved = list(tmp_path.glob("speech_*.wav"))
     assert len(saved) == 1
 
 
 @pytest.mark.asyncio
-async def test_falls_back_to_local_without_format_note_when_wav_requested(
+async def test_mp3_request_is_answered_with_wav_and_says_so(
     groq_key, fake_aspeech, tmp_path, monkeypatch
 ):
     monkeypatch.setattr(voice_io, "OUTPUT_DIR", tmp_path)
@@ -57,9 +58,10 @@ async def test_falls_back_to_local_without_format_note_when_wav_requested(
         voice_io, "_local_text_to_speech", lambda text, filepath, voice="af_heart": filepath.write_bytes(b"x") or True
     )
 
-    result = await voice_io.text_to_speech(text="hello", output_format="wav")
+    result = await voice_io.text_to_speech(text="hello", output_format="mp3")
 
-    assert "requested format ignored" not in result
+    assert "requested format ignored" in result
+    assert list(tmp_path.glob("speech_*.mp3")) == []
 
 
 @pytest.mark.asyncio
@@ -121,8 +123,7 @@ async def test_rapid_calls_do_not_collide_on_the_same_filename(groq_key, fake_as
     # Two calls landing in the same wall-clock second must not overwrite
     # each other's file - microsecond precision in the timestamp guarantees this.
     assert result_a != result_b
-    saved = list(tmp_path.glob("speech_*.mp3"))
-    assert len(saved) == 2
+    assert len(set(written)) == 2
 
 
 @pytest.mark.asyncio
@@ -148,8 +149,9 @@ async def test_partial_file_is_cleaned_up_when_groq_write_fails_after_a_successf
 
     await voice_io.text_to_speech(text="hello world")
 
-    leftover_mp3s = list(tmp_path.glob("speech_*.mp3"))
-    assert leftover_mp3s == []  # the partially-written mp3 must be cleaned up, not orphaned
+    # Only the local fallback's own file may remain - the partial hosted
+    # write must be cleaned up, not orphaned or mistaken for the result.
+    assert [p.read_bytes() for p in tmp_path.glob("speech_*.wav")] == [b"x"]
 
 
 def test_local_text_to_speech_returns_false_when_dependency_missing(tmp_path):
@@ -172,3 +174,78 @@ async def test_hosted_tts_call_is_bounded_by_a_timeout(groq_key, fake_aspeech, t
     await voice_io.text_to_speech(text="hello world")
 
     assert mock.await_args.kwargs["timeout"] == voice_io.HOSTED_CALL_TIMEOUT
+
+
+def _silent_wav_bytes(frames: int) -> bytes:
+    import io
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes(b"\x00\x00" * frames)
+    return buf.getvalue()
+
+
+def test_short_text_is_one_chunk():
+    assert voice_io._tts_chunks("  hello   world ") == ["hello world"]
+
+
+def test_long_text_splits_at_sentence_ends_within_the_limit():
+    sentence = "This sentence is exactly fifty characters long ok. "
+    chunks = voice_io._tts_chunks(sentence * 9)
+    assert all(len(c) <= voice_io.TTS_MAX_CHARS for c in chunks)
+    assert all(c.endswith(".") for c in chunks)
+    assert " ".join(chunks) == (sentence * 9).strip()
+
+
+def test_a_word_longer_than_the_limit_is_cut():
+    chunks = voice_io._tts_chunks("x" * 450)
+    assert [len(c) for c in chunks] == [200, 200, 50]
+
+
+@pytest.mark.asyncio
+async def test_long_text_is_sent_in_pieces_and_joined(groq_key, tmp_path, monkeypatch):
+    """Orpheus takes at most 200 characters per request: longer text must
+    become several requests whose WAVs are joined into one file, with the
+    part files removed afterwards."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(voice_io, "OUTPUT_DIR", tmp_path)
+
+    class WavResponse:
+        def stream_to_file(self, path):
+            open(path, "wb").write(_silent_wav_bytes(100))
+
+    mock = AsyncMock(return_value=WavResponse())
+    monkeypatch.setattr(voice_io.litellm, "aspeech", mock)
+
+    result = await voice_io.text_to_speech(text="One more sentence here. " * 20)
+
+    inputs = [c.kwargs["input"] for c in mock.await_args_list]
+    assert len(inputs) > 1
+    assert all(len(i) <= voice_io.TTS_MAX_CHARS for i in inputs)
+    assert all(c.kwargs["response_format"] == "wav" for c in mock.await_args_list)
+    assert f"{len(inputs)} requests" in result
+
+    import wave
+
+    (saved,) = tmp_path.glob("speech_*.wav")
+    with wave.open(str(saved), "rb") as w:
+        assert w.getnframes() == 100 * len(inputs)
+
+
+def test_join_refuses_parts_with_different_formats(tmp_path):
+    import wave
+
+    a, b = tmp_path / "a.wav", tmp_path / "b.wav"
+    a.write_bytes(_silent_wav_bytes(10))
+    with wave.open(str(b), "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes(b"\x00" * 40)
+    with pytest.raises(ValueError, match="disagree"):
+        voice_io._join_wavs([a, b], tmp_path / "out.wav")

@@ -1,6 +1,6 @@
 """voice-io-mcp: text-to-speech and speech-to-text as MCP tools.
 
-Groq's OpenAI-compatible audio endpoints first (playai-tts / whisper-large-
+Groq's OpenAI-compatible audio endpoints first (Orpheus / whisper-large-
 v3-turbo - both genuinely free-tier, no credit card, per Groq's own rate-
 limit docs as of 2026-09), falling back to a fully local, keyless model if
 Groq is unreachable or GROQ_API_KEY isn't set at all: Kokoro-82M (Apache-2.0)
@@ -47,21 +47,19 @@ OUTPUT_DIR = Path(os.environ.get("VOICE_IO_OUTPUT_DIR") or Path.cwd() / "output"
 
 GROQ_API_KEY_ENV = "GROQ_API_KEY"
 
-TTS_MODEL = "groq/playai-tts"
-DEFAULT_VOICE = "Fritz-PlayAI"
+# Groq retired playai-tts (deprecation announced 2025-12-23) in favour of
+# Canopy Labs' Orpheus. Orpheus answers in WAV only and takes at most 200
+# characters per request, so longer text is split and the parts joined.
+TTS_MODEL = "groq/canopylabs/orpheus-v1-english"
+DEFAULT_VOICE = "hannah"
+TTS_MAX_CHARS = 200
 STT_MODEL = "groq/whisper-large-v3-turbo"
 
-# Groq's PlayAI voice names, transcribed from Groq's public API documentation
+# Orpheus English voice names, transcribed from Groq's public documentation
 # - like the model names above, not live-verified with a real key while
 # building this. Run check_provider_health (or list_voices, which just
 # returns this list) and expect it to drift over time.
-KNOWN_VOICES = [
-    "Arista-PlayAI", "Atlas-PlayAI", "Basil-PlayAI", "Briggs-PlayAI",
-    "Calum-PlayAI", "Celeste-PlayAI", "Cheyenne-PlayAI", "Chip-PlayAI",
-    "Cillian-PlayAI", "Deedee-PlayAI", "Fritz-PlayAI", "Gail-PlayAI",
-    "Indigo-PlayAI", "Mamaw-PlayAI", "Mason-PlayAI", "Mikail-PlayAI",
-    "Mitch-PlayAI", "Quinn-PlayAI", "Thunder-PlayAI",
-]
+KNOWN_VOICES = ["autumn", "diana", "hannah", "austin", "daniel", "troy"]
 
 # speech_to_text reads a caller-supplied local file and uploads its bytes to
 # Groq (a third party) - both limits below exist so an untrusted or
@@ -198,6 +196,49 @@ def _format_unavailable_message(action: str, hosted_error: str | None, local_ext
     )
 
 
+def _tts_chunks(text: str, limit: int = TTS_MAX_CHARS) -> list[str]:
+    """Split text into pieces of at most `limit` characters, preferring
+    sentence ends, then spaces - a word is only cut when it alone is longer
+    than the limit."""
+    text = " ".join(text.split())
+    chunks = []
+    while len(text) > limit:
+        window = text[: limit + 1]
+        cut = max(window.rfind(". "), window.rfind("! "), window.rfind("? "))
+        if cut > 0:
+            cut += 1  # keep the punctuation with its sentence
+        else:
+            cut = window.rfind(" ")
+        if cut <= 0:
+            cut = limit
+        chunks.append(text[:cut].strip())
+        text = text[cut:].strip()
+    if text:
+        chunks.append(text)
+    return chunks
+
+
+def _join_wavs(parts: list[Path], target: Path) -> None:
+    """Concatenate WAV files that share one format into `target`. Raises if
+    the formats differ - splicing mismatched PCM would produce noise."""
+    params = None
+    frames = []
+    for part in parts:
+        with wave.open(str(part), "rb") as w:
+            p = (w.getnchannels(), w.getsampwidth(), w.getframerate())
+            if params is None:
+                params = p
+            elif p != params:
+                raise ValueError(f"WAV parts disagree on format: {params} vs {p}")
+            frames.append(w.readframes(w.getnframes()))
+    with wave.open(str(target), "wb") as out:
+        out.setnchannels(params[0])
+        out.setsampwidth(params[1])
+        out.setframerate(params[2])
+        for f in frames:
+            out.writeframes(f)
+
+
 def _tiny_silent_wav() -> io.BytesIO:
     """A ~0.1s silent mono WAV, built with the stdlib `wave` module (no extra
     dependency) - just enough to be a valid audio file for a transcription
@@ -249,22 +290,23 @@ async def _probe_groq_stt() -> tuple[bool, str]:
 
 
 @mcp.tool()
-async def text_to_speech(text: str, voice: str = DEFAULT_VOICE, output_format: str = "mp3") -> str:
-    """Convert text to speech, saved to output/.
+async def text_to_speech(text: str, voice: str = DEFAULT_VOICE, output_format: str = "wav") -> str:
+    """Convert text to speech, saved to output/ as a .wav file.
 
-    Tries Groq's playai-tts first (free tier, no credit card - requires
+    Tries Groq's Orpheus first (free tier, no credit card - requires
     GROQ_API_KEY), falling back to a fully local, keyless model (Kokoro-82M,
-    Apache-2.0) if Groq is unavailable or the key isn't set. The local
-    fallback always produces a .wav file regardless of `output_format`
-    (Kokoro's native output), and requires the optional `local-tts` extra
+    Apache-2.0) if Groq is unavailable or the key isn't set. Text longer
+    than Orpheus's 200-character request limit is sent in pieces and joined.
+    The local fallback requires the optional `local-tts` extra
     (`uv sync --extra local-tts`) plus the `espeak-ng` system package for
     full quality on non-trivial or non-English text.
 
     Args:
         text: Text to speak.
-        voice: Groq PlayAI voice name (e.g. "Fritz-PlayAI") - ignored by the
-            local fallback, which always uses Kokoro's "af_heart" voice.
-        output_format: "mp3" or "wav". Only honored on the Groq tier.
+        voice: Orpheus voice name (e.g. "hannah", see list_voices) - ignored
+            by the local fallback, which always uses Kokoro's "af_heart" voice.
+        output_format: "wav" (the default). "mp3" is still accepted for
+            compatibility, but both tiers now write .wav and the result says so.
     """
     # ToolError, not ValueError: under mcp >= 2.1 a plain exception is
     # treated as a crash and masked to a generic "Error executing tool ..."
@@ -280,28 +322,44 @@ async def text_to_speech(text: str, voice: str = DEFAULT_VOICE, output_format: s
 
     key = os.environ.get(GROQ_API_KEY_ENV)
     groq_error = None
+    # Orpheus and Kokoro both produce WAV; nothing here encodes mp3.
+    note = " (requested format ignored - both tiers write .wav)" if output_format != "wav" else ""
+
+    key = os.environ.get(GROQ_API_KEY_ENV)
+    groq_error = None
     if key:
-        hosted_path = OUTPUT_DIR / f"speech_{stamp}.{output_format}"
+        hosted_path = OUTPUT_DIR / f"speech_{stamp}.wav"
+        chunks = _tts_chunks(text)
+        parts = [hosted_path] if len(chunks) == 1 else [
+            OUTPUT_DIR / f"speech_{stamp}.part{i}.wav" for i in range(len(chunks))
+        ]
         try:
-            response = await litellm.aspeech(
-                model=TTS_MODEL, voice=voice, input=text, response_format=output_format, api_key=key,
-                timeout=HOSTED_CALL_TIMEOUT,
-            )
-            # stream_to_file is a blocking disk write - run it off the event
-            # loop like every other I/O call here, not inline in async def.
-            await asyncio.to_thread(response.stream_to_file, str(hosted_path))
-            return f"Audio saved to {hosted_path} (model: {TTS_MODEL})"
+            for chunk, part in zip(chunks, parts):
+                response = await litellm.aspeech(
+                    model=TTS_MODEL, voice=voice, input=chunk, response_format="wav", api_key=key,
+                    timeout=HOSTED_CALL_TIMEOUT,
+                )
+                # stream_to_file is a blocking disk write - run it off the event
+                # loop like every other I/O call here, not inline in async def.
+                await asyncio.to_thread(response.stream_to_file, str(part))
+            if len(parts) > 1:
+                await asyncio.to_thread(_join_wavs, parts, hosted_path)
+            pieces = f", {len(chunks)} requests" if len(chunks) > 1 else ""
+            return f"Audio saved to {hosted_path} (model: {TTS_MODEL}{pieces}){note}"
         except Exception as e:
             groq_error = _redact(str(e), key)
             # A partial/corrupt file can exist if the write started before
             # failing - never leave that behind silently.
             hosted_path.unlink(missing_ok=True)
             logger.warning("Groq TTS failed, falling back to local: %s", groq_error)
+        finally:
+            if len(parts) > 1:
+                for part in parts:
+                    part.unlink(missing_ok=True)
 
     local_path = OUTPUT_DIR / f"speech_{stamp}.wav"
     ok = await asyncio.to_thread(_local_text_to_speech, text, local_path)
     if ok:
-        note = " (requested format ignored - local fallback always writes .wav)" if output_format != "wav" else ""
         return f"Audio saved to {local_path} (model: local:{_LOCAL_TTS_MODEL_NAME}){note}"
 
     return _format_unavailable_message("Text-to-speech", groq_error, "local-tts")
@@ -377,7 +435,7 @@ async def speech_to_text(audio_path: str, language: str | None = None) -> str:
 
 @mcp.tool()
 async def list_voices() -> str:
-    """List known Groq PlayAI voice names usable with text_to_speech's
+    """List known Groq Orpheus voice names usable with text_to_speech's
     `voice` argument. Static list transcribed from Groq's public API docs,
     not fetched live - like the model names this server wires in, it can
     drift; check_provider_health confirms the default voice still works,
