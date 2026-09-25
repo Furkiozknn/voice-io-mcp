@@ -23,6 +23,7 @@ Every other tool in this ecosystem's [nvidia-nim-mcp](https://github.com/Furkioz
 - [Example usage](#-example-usage)
 - [Architecture](#-architecture)
 - [Development](#-development)
+- [Testing](#-testing)
 - [Known limitations](#-known-limitations--roadmap)
 - [License](#-license)
 
@@ -53,13 +54,16 @@ The local tiers are genuinely last-resort: Kokoro always writes a `.wav` file re
 uv sync
 ```
 
-**2. (Optional) Enable Groq's hosted tier.** Create a `.env` file in the project root:
+**2. (Optional) Enable Groq's hosted tier.** Copy `.env.example` to `.env` in the project root and fill it in:
 
 ```bash
-GROQ_API_KEY=your-key-here
+cp .env.example .env
+# GROQ_API_KEY=your-key-here
 ```
 
 Get one free at [console.groq.com/keys](https://console.groq.com/keys) — no credit card. Without it, both tools go straight to their local fallback.
+
+`.env.example` also documents `VOICE_IO_OUTPUT_DIR`, which controls where generated audio is written. It defaults to `output/` **under the directory the server is started in** — never inside the installed package, so a `pip install`ed copy never writes into `site-packages`.
 
 **3. (Optional) Enable the local fallbacks** — each is an independent extra, install either or both:
 
@@ -108,10 +112,35 @@ Single-file MCP server (`voice_io.py`), same shape as `nvidia-nim-mcp`'s `nvidia
 
 ```bash
 uv sync --group dev
-uv run pytest
 ```
 
-The suite (`tests/`) mocks every `litellm` call — no `GROQ_API_KEY` or real network access needed. It also exercises the *real*, unmocked local-fallback code paths against this repo's base test environment (where `kokoro`/`faster-whisper` are deliberately not installed, being optional extras), confirming both fallbacks fail closed — returning `False`/`None`, never raising — when their dependency is absent. CI (`.github/workflows/ci.yml`) runs the same command on every push/PR.
+## 🧪 Testing
+
+```bash
+uv run pytest                              # the whole suite
+uv run pytest tests/test_speech_to_text.py # one module
+uv run pytest -q -rs                       # quiet, with skip reasons
+```
+
+The suite (`tests/`) mocks every `litellm` call — no `GROQ_API_KEY` or real network access needed, and nothing in it touches the network. It also exercises the *real*, unmocked local-fallback code paths against this repo's base test environment (where `kokoro`/`faster-whisper` are deliberately not installed, being optional extras), confirming both fallbacks fail closed — returning `False`/`None`, never raising — when their dependency is absent. Two tests skip when those optional extras *are* installed; a skip there is expected, not a failure. CI (`.github/workflows/ci.yml`) runs `uv run pytest` on every push/PR.
+
+**Error contract under test:** invalid *input* (empty text, unknown `output_format`, a missing/non-audio/oversized file) raises `ToolError` from both tools; a tier that merely *failed* (Groq unreachable, no local extra installed) returns a plain descriptive string. The tests assert both halves so the two tools can't drift apart again.
+
+## What this server can actually do
+
+The expensive question about an MCP server is not what it promises but what it
+**can do on your machine**: which credentials it can touch, where it connects,
+what it runs. Answering that means reading the source, and most people will not.
+
+On every push, [mcp-vet](https://github.com/Furkiozknn/mcp-vet) from the same
+account audits this server from source and writes the whole report into the job
+summary. Today's verdict: **NOT_FLAGGED** (no finding sets the verdict). The gate closes at HIGH and
+above — and it also closes if the tool itself could not run, because "I could not
+look" should not read as green.
+
+Auditing our own server with our own tool had a side effect worth recording: adding
+this job surfaced a real false positive in mcp-vet, which was fixed. A tool nobody
+runs stays right by default.
 
 ## 🚧 Known limitations / roadmap
 
@@ -125,3 +154,16 @@ The suite (`tests/`) mocks every `litellm` call — no `GROQ_API_KEY` or real ne
 ## 📄 License
 
 MIT — see [LICENSE](LICENSE). Kokoro-82M's weights are Apache-2.0; faster-whisper is MIT. Neither is vendored in this repo — both are optional dependencies, fetched from their own sources on install/first-use.
+
+---
+
+## More from this ecosystem
+
+- **[mini-creative-toolkit](https://github.com/Furkiozknn/mini-creative-toolkit)** — 23 CPU-first media tools behind one MCP server
+- **[local-notes-search-mcp](https://github.com/Furkiozknn/local-notes-search-mcp)** — ask your own files a question, with no network
+- **[nvidia-nim-mcp](https://github.com/Furkiozknn/nvidia-nim-mcp)** — seven MCP tools on NVIDIA NIM's free tier
+- **[mcp-vet](https://github.com/Furkiozknn/mcp-vet)** — audits an MCP server's source before you install it
+
+<sub>All of them in one searchable page: **[furkiozknn.github.io](https://furkiozknn.github.io/)** — each card is generated from that repository's own <code>project-meta.json</code>.</sub>
+
+<!-- mcp-name: io.github.Furkiozknn/voice-io-mcp -->
