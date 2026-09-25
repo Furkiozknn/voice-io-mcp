@@ -1,6 +1,7 @@
 """speech_to_text: Groq's hosted whisper-large-v3-turbo first, local
 faster-whisper fallback if Groq fails or GROQ_API_KEY isn't set."""
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 import voice_io
 
@@ -12,10 +13,15 @@ def sample_audio(tmp_path):
     return str(path)
 
 
+# Bad input raises ToolError, exactly as text_to_speech already does for its
+# own invalid arguments - the two tools must report a caller mistake the same
+# way. (A tier that merely failed still returns a plain string; that is a
+# result, not a caller mistake.)
+
 @pytest.mark.asyncio
 async def test_reports_file_not_found():
-    result = await voice_io.speech_to_text(audio_path="/nonexistent/file.wav")
-    assert result == "File not found: /nonexistent/file.wav"
+    with pytest.raises(ToolError, match="File not found: /nonexistent/file.wav"):
+        await voice_io.speech_to_text(audio_path="/nonexistent/file.wav")
 
 
 @pytest.mark.asyncio
@@ -27,10 +33,10 @@ async def test_rejects_unrecognized_file_extension(tmp_path):
     suspicious = tmp_path / "not-audio.env"
     suspicious.write_text("GROQ_API_KEY=super-secret\n")
 
-    result = await voice_io.speech_to_text(audio_path=str(suspicious))
+    with pytest.raises(ToolError, match="not a recognized audio format") as excinfo:
+        await voice_io.speech_to_text(audio_path=str(suspicious))
 
-    assert "Rejected" in result
-    assert "not a recognized audio format" in result
+    assert "Rejected" in str(excinfo.value)
 
 
 @pytest.mark.asyncio
@@ -39,10 +45,10 @@ async def test_rejects_oversized_file(tmp_path, monkeypatch):
     big_file = tmp_path / "big.wav"
     big_file.write_bytes(b"x" * 100)
 
-    result = await voice_io.speech_to_text(audio_path=str(big_file))
+    with pytest.raises(ToolError, match="exceeds") as excinfo:
+        await voice_io.speech_to_text(audio_path=str(big_file))
 
-    assert "Rejected" in result
-    assert "exceeds" in result
+    assert "Rejected" in str(excinfo.value)
 
 
 @pytest.mark.asyncio

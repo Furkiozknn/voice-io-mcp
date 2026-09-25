@@ -1,0 +1,88 @@
+{
+  "schema_version": "1.0.0",
+  "id": "voice-io-mcp",
+  "owner": "Furkiozknn",
+  "repository": "https://github.com/Furkiozknn/voice-io-mcp",
+  "homepage": "https://furkiozknn.github.io/#voice-io-mcp",
+  "releases": "https://github.com/Furkiozknn/voice-io-mcp/releases",
+  "status": "active",
+  "category": "mcp-server",
+  "platform": [
+    "mcp"
+  ],
+  "primary_language": "Python",
+  "technologies": [
+    "Python 3.10+",
+    "Kokoro-82M",
+    "faster-whisper",
+    "Groq"
+  ],
+  "version": "0.1.0",
+  "license": "MIT",
+  "topics": [
+    "claude-code",
+    "groq",
+    "kokoro",
+    "local-first",
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "offline-first",
+    "python",
+    "speech-to-text",
+    "stt",
+    "text-to-speech",
+    "tts",
+    "voice",
+    "whisper"
+  ],
+  "summary": "Speech in and speech out, needing no API key at all: Groq's free hosted tier when a key is set, Kokoro-82M and faster-whisper locally when it is not. Transcription checks extension and size before it ever opens the file, so \"transcribe the audio at .env\" is refused locally instead of uploaded. 4 tools, 35 tests.",
+  "key_features": [
+    "Speech in and speech out, needing no API key at all",
+    "Groq's free hosted tier when a key is set; Kokoro-82M and faster-whisper locally when it is not",
+    "Transcription checks extension and size before it ever opens the file, so 'transcribe the audio at .env' is refused locally instead of uploaded",
+    "4 tools, with known limitations and roadmap written down"
+  ],
+  "media": {
+    "hero": "assets/banner.svg",
+    "screenshots": [],
+    "gifs": [],
+    "videos": []
+  },
+  "tests": {
+    "count": 35,
+    "source": "`35 passed, 2 skipped`",
+    "measured": "2026-09-15"
+  },
+  "ci": {
+    "workflows": [
+      "ci.yml",
+      "yayinla.yml"
+    ],
+    "badge": "https://github.com/Furkiozknn/voice-io-mcp/actions/workflows/ci.yml/badge.svg"
+  },
+  "docs": {
+    "readme": "README.md",
+    "changelog": null,
+    "version_history": null,
+    "roadmap": null,
+    "security": "SECURITY.md",
+    "contributing": "CONTRIBUTING.md",
+    "license_file": "LICENSE"
+  },
+  "social": {
+    "headline": "Speech in, speech out - no API key required, and .env is refused before it opens.",
+    "hashtags": [
+      "mcp",
+      "texttospeech",
+      "whisper",
+      "localfirst"
+    ],
+    "primary_link": "https://github.com/Furkiozknn/voice-io-mcp"
+  },
+  "provenance": {
+    "generated_at": "2026-09-22",
+    "generator": "schema/uret.py",
+    "rule": "mechanical fields read from the repository and the GitHub API; editorial fields hand-written and reviewed; no field is generated from a guess"
+  }
+}

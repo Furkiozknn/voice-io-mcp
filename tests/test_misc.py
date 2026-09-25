@@ -1,4 +1,8 @@
-"""list_voices and the _redact() defense-in-depth helper."""
+"""list_voices, the _redact() defense-in-depth helper, and OUTPUT_DIR's
+environment-driven default."""
+import importlib
+from pathlib import Path
+
 import pytest
 
 import voice_io
@@ -27,3 +31,25 @@ def test_redact_is_a_noop_when_secret_is_none_or_empty():
 
 def test_redact_is_a_noop_when_secret_not_present():
     assert voice_io._redact("some error", "unrelated-key") == "some error"
+
+
+def test_output_dir_honors_the_environment_override(monkeypatch, tmp_path):
+    """OUTPUT_DIR is resolved at import time, so this reloads the module -
+    reload mutates the existing module object in place, leaving every other
+    test's `import voice_io` reference valid."""
+    custom = tmp_path / "custom-audio-out"
+    monkeypatch.setenv("VOICE_IO_OUTPUT_DIR", str(custom))
+    try:
+        importlib.reload(voice_io)
+        assert voice_io.OUTPUT_DIR == custom
+    finally:
+        monkeypatch.delenv("VOICE_IO_OUTPUT_DIR", raising=False)
+        importlib.reload(voice_io)
+
+
+def test_output_dir_defaults_under_the_cwd_not_the_installed_package(monkeypatch):
+    """The original bug: writing into Path(__file__).parent puts generated
+    audio inside site-packages for a pip-installed user."""
+    monkeypatch.delenv("VOICE_IO_OUTPUT_DIR", raising=False)
+    importlib.reload(voice_io)
+    assert voice_io.OUTPUT_DIR == Path.cwd() / "output"
