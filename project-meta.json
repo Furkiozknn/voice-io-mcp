@@ -12,7 +12,7 @@
   ],
   "primary_language": "Python",
   "technologies": [
-    "Python 3.10+",
+    "Python 3.11+",
     "Kokoro-82M",
     "faster-whisper",
     "Groq"
@@ -36,7 +36,7 @@
     "voice",
     "whisper"
   ],
-  "summary": "Speech in and speech out, needing no API key at all: Groq's free hosted tier when a key is set, Kokoro-82M and faster-whisper locally when it is not. Transcription checks extension and size before it ever opens the file, so \"transcribe the audio at .env\" is refused locally instead of uploaded. 4 tools, 40 tests.",
+  "summary": "Speech in and speech out, needing no API key at all: Groq's free hosted tier when a key is set, Kokoro-82M and faster-whisper locally when it is not. Transcription checks extension and size before it ever opens the file, so \"transcribe the audio at .env\" is refused locally instead of uploaded. 4 tools, 56 tests.",
   "key_features": [
     "Speech in and speech out, needing no API key at all",
     "Groq's free hosted tier when a key is set; Kokoro-82M and faster-whisper locally when it is not",
@@ -50,9 +50,9 @@
     "videos": []
   },
   "tests": {
-    "count": 40,
-    "source": "`40 passed, 2 skipped`",
-    "measured": "2026-09-15"
+    "count": 56,
+    "source": "`56 passed, 3 skipped`",
+    "measured": "2026-09-25"
   },
   "ci": {
     "workflows": [

@@ -5,7 +5,7 @@
 # voice-io-mcp
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-76b900?style=flat-square)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-76b900?style=flat-square)](pyproject.toml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-76b900?style=flat-square)](pyproject.toml)
 [![MCP Server](https://img.shields.io/badge/MCP-server-76b900?style=flat-square)](https://modelcontextprotocol.io)
 [![Cost](https://img.shields.io/badge/cost-%240-76b900?style=flat-square)](#-setup)
 
@@ -31,10 +31,10 @@ Every other tool in this ecosystem's [nvidia-nim-mcp](https://github.com/Furkioz
 
 | Tool | What it does | Hosted tier (Groq, free) | Local fallback |
 |---|---|---|---|
-| 🔊 `text_to_speech` | Text → audio file, saved to `output/` | Orpheus (`canopylabs/orpheus-v1-english`) | Kokoro-82M (Apache-2.0) |
-| 🎙️ `speech_to_text` | Audio file → transcript (rejects non-audio extensions and files over 25MB before ever reading them) | `whisper-large-v3-turbo` | faster-whisper (MIT) |
+| 🔊 `text_to_speech` | Text (up to 4000 characters) → `.wav` file, saved to `output/` | Orpheus (`canopylabs/orpheus-v1-english`) | Kokoro-82M (Apache-2.0) |
+| 🎙️ `speech_to_text` | Audio file → transcript (refuses non-audio extensions, symlinks to non-audio files, directories/FIFOs/devices and files over 25MB before reading a byte) | `whisper-large-v3-turbo` | faster-whisper (MIT) |
 | 🗣️ `list_voices` | List known Groq Orpheus voice names for `text_to_speech`'s `voice` argument | — (static list) | — |
-| 🩺 `check_provider_health` | Liveness probe for both hosted endpoints + local-dependency availability check | both | both |
+| 🩺 `check_provider_health` | Looks both hosted models up in Groq's model list (no audio quota spent; `live=true` sends real requests) + local-dependency availability check | both | both |
 
 ## 🔄 The fallback chain
 
@@ -81,10 +81,12 @@ uv sync --extra local-stt   # faster-whisper
 **4. Register it as an MCP server** with Claude Code (project or user scope):
 
 ```bash
-claude mcp add --transport stdio voice-io -- uv run --project /path/to/this/repo voice_io.py
+claude mcp add --transport stdio voice-io -- uv run --project /path/to/this/repo voice-io-mcp
 ```
 
-**5. Run `check_provider_health` once, after setting `GROQ_API_KEY`.** The model/voice names this server wires in (`canopylabs/orpheus-v1-english`, `whisper-large-v3-turbo`) were transcribed from Groq's public docs but never live-verified with a real key while building this — confirm they're still current before relying on the hosted tier, the same "don't trust a name from memory" discipline `nvidia-nim-mcp` documents for its own model list. If a name has drifted, the local fallback still works regardless (once its extra is installed).
+`voice-io-mcp` is the console command the project installs into its own environment, so this works from any directory. (`uv run --project … voice_io.py` does not: `--project` picks the environment, but the script path is still looked up in the directory Claude Code starts the server from.)
+
+**5. Run `check_provider_health` once, after setting `GROQ_API_KEY`.** The model/voice names this server wires in (`canopylabs/orpheus-v1-english`, `whisper-large-v3-turbo`) were transcribed from Groq's public docs but never live-verified with a real key while building this — confirm they're still current before relying on the hosted tier. By default the check only looks both ids up in Groq's model list, which spends no speech or transcription quota; `live=true` sends one real TTS request and one transcription of 0.1 s of silence (Groq bills a transcription as at least 10 seconds), which also catches per-model problems such as terms not yet accepted in the Groq console. This is the same "don't trust a name from memory" discipline `nvidia-nim-mcp` documents for its own model list. If a name has drifted, the local fallback still works regardless (once its extra is installed).
 
 ## ▶️ Example usage
 
@@ -110,7 +112,12 @@ Single-file MCP server (`voice_io.py`), same shape as `nvidia-nim-mcp`'s `nvidia
 - **Hosted calls** go through [`litellm`](https://github.com/BerriAI/litellm) (`aspeech` / `atranscription`), the same library `nvidia-nim-mcp` and `model-comparison-harness` already use for their own multi-provider chat chains — one dependency covering chat, TTS, and STT uniformly across providers, rather than hand-rolling Groq's HTTP shape directly.
 - **Local fallbacks** are lazy-loaded singletons (loaded once, on first real use, not at import time) guarded by a `threading.Lock` — a lesson carried over from a real bug caught in `nvidia-nim-mcp`'s own local-embedding fallback: without the lock, two concurrent calls could both start loading the same large model at once.
 - **The STT health probe** builds a valid ~0.1s silent WAV in-memory using only Python's stdlib `wave` module — no binary audio fixture shipped in the repo, no extra dependency just to construct a liveness-check payload.
-- **`speech_to_text` validates before it reads.** It reads whatever local path it's given and uploads the bytes to Groq (a third party) — an extension allow-list and a 25MB size cap run *before* the file is opened, so a wrong or maliciously-crafted path (e.g. an agent instructed to "transcribe the audio at `.env`") is rejected locally instead of silently uploaded. Any captured Groq error text also has the API key scrubbed out before it's returned or logged, as defense-in-depth against an underlying HTTP client embedding it in an exception message.
+- **`speech_to_text` validates before it reads.** It reads whatever local path it's given and uploads the bytes to Groq (a third party) — so a wrong or maliciously-crafted path (e.g. an agent instructed to "transcribe the audio at `.env`") must be rejected locally instead of silently uploaded:
+  - the extension allow-list (case-insensitive) is checked on the path as given *and* on the file it finally resolves to, so a symlink such as `memo.wav → ~/.env` is refused;
+  - the resolved file is opened once (`O_NOFOLLOW`, `O_NONBLOCK` where the OS has them) and everything else is decided on that open descriptor: it must be a regular file — not a directory, FIFO or device — and at most 25MB, and at most 25MB + 1 byte is ever read, so a file that grows after the check is still refused;
+  - both tiers receive those same validated bytes; nothing reopens the path, so it cannot be swapped between the check and the upload.
+- **Errors never carry the key, and stdout stays clean.** Captured Groq error text has the API key scrubbed before it's returned or logged. litellm's "Give Feedback / Get Help" banner, which it otherwise `print()`s on every failed call, is switched off — on a stdio server stdout is the protocol channel.
+- **Bounded hosted calls.** Each request has a 120 s timeout and one retry (the OpenAI client under litellm would otherwise retry twice, each attempt with its own timeout); after that the local fallback runs.
 
 ## 🛠 Development
 
@@ -126,7 +133,7 @@ uv run pytest tests/test_speech_to_text.py # one module
 uv run pytest -q -rs                       # quiet, with skip reasons
 ```
 
-The suite (`tests/`) mocks every `litellm` call — no `GROQ_API_KEY` or real network access needed, and nothing in it touches the network. It also exercises the *real*, unmocked local-fallback code paths against this repo's base test environment (where `kokoro`/`faster-whisper` are deliberately not installed, being optional extras), confirming both fallbacks fail closed — returning `False`/`None`, never raising — when their dependency is absent. Two tests skip when those optional extras *are* installed; a skip there is expected, not a failure. CI (`.github/workflows/ci.yml`) runs `uv run pytest` on every push/PR.
+The suite (`tests/`) mocks every `litellm` call — no `GROQ_API_KEY` or real network access needed, and nothing in it touches the network. It also exercises the *real*, unmocked local-fallback code paths against this repo's base test environment (where `kokoro`/`faster-whisper` are deliberately not installed, being optional extras), confirming both fallbacks fail closed — returning `False`/`None`, never raising — when their dependency is absent. The three real-model tests in `tests/test_local_integration.py` skip unless those optional extras *are* installed; a skip there is expected locally, not a failure. CI (`.github/workflows/ci.yml`) runs `uv run pytest` on Python 3.11 and 3.13 on every push/PR, plus a `yerel` job that installs both extras (and `espeak-ng`) and runs the real-model tests with skips treated as failures.
 
 **Error contract under test:** invalid *input* (empty text, unknown `output_format`, a missing/non-audio/oversized file) raises `ToolError` from both tools; a tier that merely *failed* (Groq unreachable, no local extra installed) returns a plain descriptive string. The tests assert both halves so the two tools can't drift apart again.
 
@@ -154,7 +161,8 @@ runs stays right by default.
 - **Groq's Gemini-Flash TTS tier was researched but not wired in.** Its free tier exists but is restricted to non-commercial/personal use per Google's terms, and its request/response shape wasn't verified during this build — a clean second hosted fallback tier to add later once both are confirmed.
 - **No streaming.** Both tools return a complete file/transcript, not a chunked stream — fine for short clips and voice memos, a real limitation for long-form audio.
 - **Output is always `.wav`**, on both tiers (see [The fallback chain](#-the-fallback-chain)) — Orpheus offers nothing else, and Kokoro skips mp3 encoding as a deliberate cross-platform-safety tradeoff.
-- **Long text costs several hosted requests** — one per 200 characters, against the free tier's per-minute allowance.
+- **Long text costs several hosted requests** — one per 200 characters, against the free tier's per-minute allowance; input is capped at 4000 characters (at most 20 requests) per call.
+- **The content of an audio-named file is not inspected.** A regular file whose name ends in an allowed extension is uploaded as-is — the checks stop a path from *pointing* somewhere else, not someone from saving a secret as `notes.wav`.
 
 ## 📄 License
 
