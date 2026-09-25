@@ -22,17 +22,26 @@ import importlib.util
 import io
 import logging
 import os
+import stat
 import threading
+import uuid
 import wave
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
+import httpx
 import litellm
 from dotenv import load_dotenv
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 load_dotenv()
+
+# This server speaks JSON-RPC over stdout. On every failed provider call
+# litellm otherwise print()s a "Give Feedback / Get Help" banner to stdout,
+# i.e. into the protocol stream, exactly when a fallback is about to run.
+litellm.suppress_debug_info = True
 
 logger = logging.getLogger(__name__)
 
@@ -75,11 +84,32 @@ MAX_AUDIO_BYTES = 25 * 1024 * 1024
 # quick "is it alive" check, not a real generation, so failing fast is correct.
 HEALTH_PROBE_TIMEOUT = 8.0
 
+# The default health check asks Groq's model list whether the two model ids
+# still exist instead of generating speech and uploading audio: a listing
+# costs no audio quota, while a real probe spends one TTS and one STT request
+# (Groq bills a transcription as at least 10 seconds) every time it runs.
+# Same base URL litellm uses for Groq, honouring the same override.
+GROQ_API_BASE = os.environ.get("GROQ_API_BASE") or "https://api.groq.com/openai/v1"
+_http_transport: httpx.AsyncBaseTransport | None = None  # tests inject a MockTransport
+
+# Upper bound on text_to_speech input. Orpheus takes 200 characters per
+# request, so this is at most 20 hosted requests for one call - past that a
+# single prompt could burn a free tier's whole per-minute allowance (or run
+# for many minutes locally) without anyone having asked for an audiobook.
+MAX_TTS_TEXT_CHARS = 4000
+
 # Passed to the real hosted TTS/STT calls. litellm's default is 600 seconds;
 # a wedged provider would otherwise hold the tool for ten minutes before the
 # local fallback even got a chance. Two minutes comfortably covers a 25MB
 # upload plus transcription on the free tier.
 HOSTED_CALL_TIMEOUT = 120.0
+
+# The OpenAI client under litellm retries twice by default, and the timeout
+# above applies per attempt - three attempts could hold a call for six
+# minutes. One retry absorbs a transient blip; after that the local
+# fallback is the better use of the caller's time. Health probes never
+# retry: their job is to report, not to recover.
+HOSTED_MAX_RETRIES = 1
 
 _LOCAL_TTS_MODEL_NAME = "kokoro-82m"
 _KOKORO_LANG_CODE = "a"  # American English - must match the voice prefix (af_/am_)
@@ -139,11 +169,14 @@ def _local_text_to_speech(text: str, filepath: Path, voice: str = "af_heart") ->
         return False
 
 
-def _local_speech_to_text(audio_path: str) -> str | None:
+def _local_speech_to_text(audio: str | io.BytesIO) -> str | None:
     """Fully local, keyless STT fallback via faster-whisper. Weights
     auto-download from Hugging Face Hub on first use - only used if Groq's
     hosted endpoint fails or GROQ_API_KEY isn't set. Returns None (never
-    raises) if the optional dependency is missing or transcription fails."""
+    raises) if the optional dependency is missing or transcription fails.
+
+    `audio` may be a path or an in-memory file; speech_to_text passes the
+    bytes it already validated so the file is never reopened by path."""
     global _local_stt_model
     try:
         if _local_stt_model is None:
@@ -152,7 +185,7 @@ def _local_speech_to_text(audio_path: str) -> str | None:
                     from faster_whisper import WhisperModel
 
                     _local_stt_model = WhisperModel(_LOCAL_STT_MODEL_SIZE, device="cpu", compute_type="int8")
-        segments, _info = _local_stt_model.transcribe(audio_path)
+        segments, _info = _local_stt_model.transcribe(audio)
         return " ".join(segment.text.strip() for segment in segments)
     except Exception as e:
         logger.warning("local STT fallback unavailable: %s", e)
@@ -160,17 +193,78 @@ def _local_speech_to_text(audio_path: str) -> str | None:
 
 
 def _stamp() -> str:
-    """Microsecond-precision timestamp for output filenames - plain
-    second-precision let two rapid tool calls collide and silently
-    overwrite each other's audio file."""
-    return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    """Unique, sortable stem for output filenames. Plain second precision
+    let two rapid tool calls collide and silently overwrite each other's
+    audio; microseconds alone are not enough either, because the wall clock
+    on Windows advances in steps far coarser than a microsecond. The random
+    suffix makes a collision practically impossible on every platform."""
+    return f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{uuid.uuid4().hex[:6]}"
 
 
-def _read_audio_file(path: Path) -> io.BytesIO:
-    """Read an audio file into an in-memory buffer with a `.name` attribute
-    (some upload APIs use the filename for content-type sniffing)."""
-    buf = io.BytesIO(path.read_bytes())
-    buf.name = path.name
+def _check_audio_suffix(name: str, shown: str) -> None:
+    suffix = Path(name).suffix
+    if suffix.lower() not in ALLOWED_AUDIO_EXTENSIONS:
+        raise ToolError(
+            f"Rejected: {shown} has {suffix or '(no extension)'}, which is not a recognized audio "
+            f"format (expected one of {sorted(ALLOWED_AUDIO_EXTENSIONS)})"
+        )
+
+
+def _read_audio_file(audio_path: str) -> tuple[bytes, str]:
+    """Validate and read a caller-supplied audio path in one pass, returning
+    (bytes, filename). Raises ToolError for anything that must not be read.
+
+    The checks and the read act on the same open file descriptor, not on
+    the path twice, so nothing can be swapped in between:
+    - the extension is checked on the path as given AND on the file it
+      finally resolves to, so `memo.wav -> ~/.env` (a symlink with an audio
+      name) is refused instead of uploading the secret it points at;
+    - the resolved path is opened with O_NOFOLLOW and O_NONBLOCK where the
+      platform has them, so a last-moment symlink swap fails and a FIFO
+      cannot hang the call;
+    - fstat on that descriptor must say "regular file" (no directory, FIFO,
+      socket or device) and within the size cap;
+    - at most cap+1 bytes are read, so a file that grows after the fstat is
+      still refused rather than uploaded past the limit.
+    """
+    path = Path(audio_path).expanduser()
+    _check_audio_suffix(path.name, "path")
+    try:
+        real = path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise ToolError(f"File not found: {audio_path}") from None
+    if real.name != path.name:
+        _check_audio_suffix(real.name, f"link target {real.name!r}")
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+    try:
+        fd = os.open(real, flags)
+    except OSError as e:
+        raise ToolError(f"Cannot open {audio_path}: {e.strerror or e}") from None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ToolError(f"Rejected: {audio_path} is not a regular file")
+        if st.st_size > MAX_AUDIO_BYTES:
+            raise ToolError(
+                f"Rejected: file is {st.st_size / (1024 * 1024):.1f}MB, exceeds the "
+                f"{MAX_AUDIO_BYTES // (1024 * 1024)}MB limit"
+            )
+    except BaseException:
+        os.close(fd)
+        raise
+    with os.fdopen(fd, "rb") as f:
+        data = f.read(MAX_AUDIO_BYTES + 1)
+        if len(data) > MAX_AUDIO_BYTES:
+            raise ToolError(f"Rejected: file grew past the {MAX_AUDIO_BYTES // (1024 * 1024)}MB limit while being read")
+    return data, path.name
+
+
+def _named_buffer(data: bytes, name: str) -> io.BytesIO:
+    """In-memory file with a `.name` (upload APIs use it to guess the
+    content type)."""
+    buf = io.BytesIO(data)
+    buf.name = name
     return buf
 
 
@@ -263,13 +357,44 @@ def _probe_local_dependency(module_name: str) -> tuple[bool, str]:
     return True, "installed"
 
 
+async def _probe_groq_models() -> dict[str, tuple[bool, str]]:
+    """Quota-free check: one GET of Groq's model list, then look up both
+    model ids in it. Confirms the key is accepted and neither name has
+    drifted, without generating speech or uploading audio."""
+    key = os.environ.get(GROQ_API_KEY_ENV)
+    models = (TTS_MODEL, STT_MODEL)
+    if not key:
+        return {m: (False, "not configured") for m in models}
+    try:
+        async with httpx.AsyncClient(timeout=HEALTH_PROBE_TIMEOUT, transport=_http_transport) as client:
+            response = await client.get(f"{GROQ_API_BASE}/models", headers={"Authorization": f"Bearer {key}"})
+    except Exception as e:
+        detail = f"error: {_redact(str(e), key)}"
+        return {m: (False, detail) for m in models}
+    if response.status_code in (401, 403):
+        return {m: (False, f"key rejected (HTTP {response.status_code})") for m in models}
+    if response.status_code != 200:
+        return {m: (False, f"error: model list answered HTTP {response.status_code}") for m in models}
+    try:
+        listed = {item["id"] for item in response.json()["data"]}
+    except Exception:
+        return {m: (False, "error: unexpected model list response") for m in models}
+    return {
+        m: (True, "listed (model lookup only - run with live=true to test a real request)")
+        if m.removeprefix("groq/") in listed
+        else (False, "not in Groq's model list - the name has drifted or the model was retired")
+        for m in models
+    }
+
+
 async def _probe_groq_tts() -> tuple[bool, str]:
     key = os.environ.get(GROQ_API_KEY_ENV)
     if not key:
         return False, "not configured"
     try:
         await litellm.aspeech(
-            model=TTS_MODEL, voice=DEFAULT_VOICE, input="hi", api_key=key, timeout=HEALTH_PROBE_TIMEOUT
+            model=TTS_MODEL, voice=DEFAULT_VOICE, input="hi", response_format="wav", api_key=key,
+            timeout=HEALTH_PROBE_TIMEOUT, max_retries=0,
         )
     except Exception as e:
         return False, f"error: {_redact(str(e), key)}"
@@ -282,7 +407,7 @@ async def _probe_groq_stt() -> tuple[bool, str]:
         return False, "not configured"
     try:
         await litellm.atranscription(
-            model=STT_MODEL, file=_tiny_silent_wav(), api_key=key, timeout=HEALTH_PROBE_TIMEOUT
+            model=STT_MODEL, file=_tiny_silent_wav(), api_key=key, timeout=HEALTH_PROBE_TIMEOUT, max_retries=0
         )
     except Exception as e:
         return False, f"error: {_redact(str(e), key)}"
@@ -290,8 +415,11 @@ async def _probe_groq_stt() -> tuple[bool, str]:
 
 
 @mcp.tool()
-async def text_to_speech(text: str, voice: str = DEFAULT_VOICE, output_format: str = "wav") -> str:
-    """Convert text to speech, saved to output/ as a .wav file.
+async def text_to_speech(
+    text: str, voice: str = DEFAULT_VOICE, output_format: Literal["wav", "mp3"] = "wav"
+) -> str:
+    """Convert text to speech, saved as a .wav file in the server's output
+    directory (VOICE_IO_OUTPUT_DIR, default ./output); returns the path.
 
     Tries Groq's Orpheus first (free tier, no credit card - requires
     GROQ_API_KEY), falling back to a fully local, keyless model (Kokoro-82M,
@@ -302,7 +430,7 @@ async def text_to_speech(text: str, voice: str = DEFAULT_VOICE, output_format: s
     full quality on non-trivial or non-English text.
 
     Args:
-        text: Text to speak.
+        text: Text to speak, at most 4000 characters.
         voice: Orpheus voice name (e.g. "hannah", see list_voices) - ignored
             by the local fallback, which always uses Kokoro's "af_heart" voice.
         output_format: "wav" (the default). "mp3" is still accepted for
@@ -316,12 +444,22 @@ async def text_to_speech(text: str, voice: str = DEFAULT_VOICE, output_format: s
         raise ToolError(f"output_format must be 'mp3' or 'wav', got {output_format!r}")
     if not text.strip():
         raise ToolError("text must not be empty")
+    if len(text) > MAX_TTS_TEXT_CHARS:
+        raise ToolError(
+            f"text is {len(text)} characters, over the {MAX_TTS_TEXT_CHARS}-character limit "
+            f"- split it into several calls"
+        )
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        # Otherwise the SDK masks this as a bare "Error executing tool".
+        raise ToolError(
+            f"Cannot create output directory {OUTPUT_DIR}: {e.strerror or e} "
+            f"(set VOICE_IO_OUTPUT_DIR to a writable directory)"
+        ) from None
     stamp = _stamp()
 
-    key = os.environ.get(GROQ_API_KEY_ENV)
-    groq_error = None
     # Orpheus and Kokoro both produce WAV; nothing here encodes mp3.
     note = " (requested format ignored - both tiers write .wav)" if output_format != "wav" else ""
 
@@ -337,7 +475,7 @@ async def text_to_speech(text: str, voice: str = DEFAULT_VOICE, output_format: s
             for chunk, part in zip(chunks, parts):
                 response = await litellm.aspeech(
                     model=TTS_MODEL, voice=voice, input=chunk, response_format="wav", api_key=key,
-                    timeout=HOSTED_CALL_TIMEOUT,
+                    timeout=HOSTED_CALL_TIMEOUT, max_retries=HOSTED_MAX_RETRIES,
                 )
                 # stream_to_file is a blocking disk write - run it off the event
                 # loop like every other I/O call here, not inline in async def.
@@ -377,13 +515,16 @@ async def speech_to_text(audio_path: str, language: str | None = None) -> str:
 
     Args:
         audio_path: Absolute path to a local audio file (mp3/wav/m4a/flac/
-            ogg/webm/mp4/mpeg/mpga), max 25MB.
+            ogg/webm/mp4/mpeg/mpga, any case), max 25MB. A symlink is
+            followed only if its target also has an audio extension;
+            directories, FIFOs and devices are refused.
         language: Optional ISO-639-1 language hint (e.g. "en"). Ignored by
             the local fallback, which auto-detects language.
 
     Raises:
-        ToolError: if the path does not exist, is not a recognized audio
-            format, or exceeds the 25MB upload limit - the same contract
+        ToolError: if the path does not exist, is not a regular file with
+            a recognized audio extension, or exceeds the 25MB upload limit
+            - the same contract
             text_to_speech uses for its own invalid arguments.
     """
     # ToolError, not a plain return string: bad input is the same class of
@@ -391,42 +532,29 @@ async def speech_to_text(audio_path: str, language: str | None = None) -> str:
     # must not disagree about how an invalid argument is reported. A tier
     # that merely failed (Groq down, no local extra) still returns a string -
     # that is a result, not a caller mistake.
-    path = Path(audio_path)
-    if not path.is_file():
-        raise ToolError(f"File not found: {audio_path}")
     # This tool reads whatever local file it's pointed at and uploads its
-    # bytes to Groq (a third party) - an extension allow-list and size cap
-    # up front stop it from being turned into a generic "read and exfiltrate
-    # an arbitrary file" primitive by a wrong or maliciously-crafted path.
-    if path.suffix.lower() not in ALLOWED_AUDIO_EXTENSIONS:
-        raise ToolError(
-            f"Rejected: {path.suffix or '(no extension)'} is not a recognized audio format "
-            f"(expected one of {sorted(ALLOWED_AUDIO_EXTENSIONS)})"
-        )
-    size = path.stat().st_size
-    if size > MAX_AUDIO_BYTES:
-        raise ToolError(
-            f"Rejected: file is {size / (1024 * 1024):.1f}MB, exceeds the "
-            f"{MAX_AUDIO_BYTES // (1024 * 1024)}MB limit"
-        )
+    # bytes to Groq (a third party) - the allow-list, file-type and size
+    # checks in _read_audio_file stop it from being turned into a generic
+    # "read and exfiltrate an arbitrary file" primitive by a wrong or
+    # maliciously-crafted path. The bytes read there are the only ones
+    # either tier ever sees; the path is not opened a second time.
+    # (Blocking disk read - off the event loop, same rule as the TTS write.)
+    data, name = await asyncio.to_thread(_read_audio_file, audio_path)
 
     key = os.environ.get(GROQ_API_KEY_ENV)
     groq_error = None
     if key:
         try:
-            # Reading the file is a blocking disk read - run it off the
-            # event loop, same rule as the TTS write above.
-            audio_file = await asyncio.to_thread(_read_audio_file, path)
             response = await litellm.atranscription(
-                model=STT_MODEL, file=audio_file, language=language, api_key=key,
-                timeout=HOSTED_CALL_TIMEOUT,
+                model=STT_MODEL, file=_named_buffer(data, name), language=language, api_key=key,
+                timeout=HOSTED_CALL_TIMEOUT, max_retries=HOSTED_MAX_RETRIES,
             )
             return f"{response.text}\n\n(model: {STT_MODEL})"
         except Exception as e:
             groq_error = _redact(str(e), key)
             logger.warning("Groq STT failed, falling back to local: %s", groq_error)
 
-    text = await asyncio.to_thread(_local_speech_to_text, str(path))
+    text = await asyncio.to_thread(_local_speech_to_text, _named_buffer(data, name))
     if text is not None:
         return f"{text}\n\n(model: local:{_LOCAL_STT_MODEL_NAME})"
 
@@ -444,14 +572,25 @@ async def list_voices() -> str:
 
 
 @mcp.tool()
-async def check_provider_health() -> str:
-    """Check whether Groq's hosted TTS/STT endpoints are currently reachable
-    and whether each local fallback's optional dependency is installed -
-    without running a full local model load (kokoro/faster-whisper can take
-    real time and disk space on first use, which would defeat the point of
-    a quick health check).
+async def check_provider_health(live: bool = False) -> str:
+    """Check Groq's hosted TTS/STT models and whether each local fallback's
+    optional dependency is installed - without loading a local model
+    (kokoro/faster-whisper can take real time and disk space on first use).
+
+    Args:
+        live: False (default) only looks both model ids up in Groq's model
+            list: confirms the key works and the names still exist, and
+            spends no speech or transcription quota. True sends one real
+            TTS request and one real transcription of 0.1s of silence -
+            this spends free-tier quota each time, but also catches
+            per-model problems a listing cannot (e.g. terms not accepted
+            in the Groq console).
     """
-    tts_result, stt_result = await asyncio.gather(_probe_groq_tts(), _probe_groq_stt())
+    if live:
+        tts_result, stt_result = await asyncio.gather(_probe_groq_tts(), _probe_groq_stt())
+    else:
+        listed = await _probe_groq_models()
+        tts_result, stt_result = listed[TTS_MODEL], listed[STT_MODEL]
     local_tts_ok, local_tts_detail = _probe_local_dependency("kokoro")
     local_stt_ok, local_stt_detail = _probe_local_dependency("faster_whisper")
 

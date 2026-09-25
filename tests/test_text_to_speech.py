@@ -121,7 +121,7 @@ async def test_rapid_calls_do_not_collide_on_the_same_filename(groq_key, fake_as
     result_b = await voice_io.text_to_speech(text="second call")
 
     # Two calls landing in the same wall-clock second must not overwrite
-    # each other's file - microsecond precision in the timestamp guarantees this.
+    # each other's file.
     assert result_a != result_b
     assert len(set(written)) == 2
 
@@ -174,6 +174,7 @@ async def test_hosted_tts_call_is_bounded_by_a_timeout(groq_key, fake_aspeech, t
     await voice_io.text_to_speech(text="hello world")
 
     assert mock.await_args.kwargs["timeout"] == voice_io.HOSTED_CALL_TIMEOUT
+    assert mock.await_args.kwargs["max_retries"] == voice_io.HOSTED_MAX_RETRIES
 
 
 def _silent_wav_bytes(frames: int) -> bytes:
@@ -249,3 +250,46 @@ def test_join_refuses_parts_with_different_formats(tmp_path):
         w.writeframes(b"\x00" * 40)
     with pytest.raises(ValueError, match="disagree"):
         voice_io._join_wavs([a, b], tmp_path / "out.wav")
+
+
+def test_stamps_stay_unique_even_when_the_clock_does_not_move(monkeypatch):
+    """Windows' wall clock advances in coarse steps, so two calls can read
+    the very same microsecond - the stem must still differ."""
+    from datetime import datetime as real_datetime
+
+    class FrozenClock:
+        @staticmethod
+        def now():
+            return real_datetime(2026, 9, 25, 12, 0, 0, 0)
+
+    monkeypatch.setattr(voice_io, "datetime", FrozenClock)
+
+    assert len({voice_io._stamp() for _ in range(50)}) == 50
+
+
+@pytest.mark.asyncio
+async def test_rejects_text_over_the_length_cap_before_any_request(groq_key, fake_aspeech, tmp_path, monkeypatch):
+    monkeypatch.setattr(voice_io, "OUTPUT_DIR", tmp_path)
+    mock = fake_aspeech()
+
+    with pytest.raises(ToolError, match="4000-character limit"):
+        await voice_io.text_to_speech(text="x" * (voice_io.MAX_TTS_TEXT_CHARS + 1))
+
+    mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unwritable_output_dir_is_a_clear_tool_error(monkeypatch, tmp_path):
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("a file where the output directory should be")
+    monkeypatch.setattr(voice_io, "OUTPUT_DIR", blocker / "output")
+
+    with pytest.raises(ToolError, match="Cannot create output directory .*VOICE_IO_OUTPUT_DIR"):
+        await voice_io.text_to_speech(text="hello")
+
+
+@pytest.mark.asyncio
+async def test_output_format_schema_is_an_enum():
+    tools = {t.name: t for t in await voice_io.mcp.list_tools()}
+    schema = tools["text_to_speech"].input_schema["properties"]["output_format"]
+    assert schema.get("enum") == ["wav", "mp3"]
