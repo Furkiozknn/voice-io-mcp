@@ -221,6 +221,6 @@ async def test_extension_check_is_case_insensitive(groq_key, fake_atranscription
 @pytest.mark.asyncio
 async def test_a_nonexistent_non_audio_path_is_refused_without_probing_it():
     # The extension is checked before the filesystem is touched, so the
-    # answer does not reveal whether e.g. ~/.ssh/id_rsa exists.
+    # answer does not reveal whether some private file exists.
     with pytest.raises(ToolError, match="not a recognized audio format"):
-        await voice_io.speech_to_text(audio_path="/nonexistent/id_rsa")
+        await voice_io.speech_to_text(audio_path="/nonexistent/private.key")

@@ -61,7 +61,7 @@ async def test_a_failing_hosted_call_writes_nothing_to_stdout(monkeypatch, tmp_p
     against a closed local port must fail without printing into it -
     litellm's default is a multi-line "Give Feedback" banner."""
     monkeypatch.setenv("GROQ_API_KEY", "gsk_test_key_never_sent_anywhere")
-    monkeypatch.setenv("GROQ_API_BASE", "http://127.0.0.1:9")  # nothing listens here
+    monkeypatch.setenv("GROQ_API_BASE", "http://localhost:9")  # discard port: nothing listens here
     monkeypatch.setattr(voice_io, "HOSTED_MAX_RETRIES", 0)
     audio = tmp_path / "clip.wav"
     audio.write_bytes(voice_io._tiny_silent_wav().read())

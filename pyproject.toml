@@ -32,9 +32,9 @@ classifiers = [
 # exists from 3.11 - on 3.10 `import voice_io` fails before the server
 # starts. CI runs the suite on the lowest and highest version below.
 requires-python = ">=3.11"
+# httpx: imported directly by the quota-free health check - litellm pulls
+# it in anyway, but this module uses it itself.
 dependencies = [
-    # Imported directly by the quota-free health check (already pulled in
-    # by litellm; declared because this module uses it itself).
     "httpx>=0.27",
     "litellm>=1.97.0",
     "mcp[cli]>=2.1,<3",

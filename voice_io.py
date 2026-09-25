@@ -88,8 +88,8 @@ HEALTH_PROBE_TIMEOUT = 8.0
 # still exist instead of generating speech and uploading audio: a listing
 # costs no audio quota, while a real probe spends one TTS and one STT request
 # (Groq bills a transcription as at least 10 seconds) every time it runs.
-# Same base URL litellm uses for Groq, honouring the same override.
-GROQ_API_BASE = os.environ.get("GROQ_API_BASE") or "https://api.groq.com/openai/v1"
+# A fixed, documented destination: the probe checks Groq itself.
+GROQ_MODELS_URL = "https://api.groq.com/openai/v1/models"
 _http_transport: httpx.AsyncBaseTransport | None = None  # tests inject a MockTransport
 
 # Upper bound on text_to_speech input. Orpheus takes 200 characters per
@@ -367,7 +367,7 @@ async def _probe_groq_models() -> dict[str, tuple[bool, str]]:
         return {m: (False, "not configured") for m in models}
     try:
         async with httpx.AsyncClient(timeout=HEALTH_PROBE_TIMEOUT, transport=_http_transport) as client:
-            response = await client.get(f"{GROQ_API_BASE}/models", headers={"Authorization": f"Bearer {key}"})
+            response = await client.get(GROQ_MODELS_URL, headers={"Authorization": f"Bearer {key}"})
     except Exception as e:
         detail = f"error: {_redact(str(e), key)}"
         return {m: (False, detail) for m in models}
