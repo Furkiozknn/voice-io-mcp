@@ -14,6 +14,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10  # olculen en uzun kosu 27 sn
     # En dusuk ve en yuksek desteklenen surum. 3.10 destegi kagit uzerinde
     # vardi ama litellm 3.10'da import edilemiyordu; bunu hicbir sey
     # denemedigi icin kimse fark etmedi.
@@ -26,7 +27,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
           python-version: ${{ matrix.python }}
 
@@ -48,7 +49,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
       - name: espeak-ng (Kokoro'nun fonemleyicisi)
         run: sudo apt-get update -q && sudo apt-get install -y -q espeak-ng
@@ -71,11 +72,12 @@ jobs:
   # hicbir sey paketlemeyi denemiyordu. Bu is onu her push'a tasiyor.
   paket:
     runs-on: ubuntu-latest
+    timeout-minutes: 10  # olculen en uzun kosu 20 sn
     steps:
       - uses: actions/checkout@v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
       - name: Paket derleniyor mu
         run: uv build
@@ -100,11 +102,10 @@ jobs:
   denetim:
     name: mcp-vet (kendi sunucumuza kendi aracimiz)
     runs-on: ubuntu-latest
+    timeout-minutes: 10  # olculen en uzun kosu 10 sn
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v7
-
-      # Ayni hesaptaki mcp-vet: bir MCP sunucusunun ne yapabildigini
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
       # kaynaktan cikariyor -- hangi kimlik bilgilerine dokunuyor, nereye
       # baglaniyor, ne calistiriyor. Kendi sunucumuzu kendi aracimizla
       # denetlemek, aracin da sunucunun da yanlis bulgusunu ortaya cikariyor:
