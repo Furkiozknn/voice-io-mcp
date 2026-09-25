@@ -4,6 +4,7 @@ import importlib
 from pathlib import Path
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 import voice_io
 
@@ -53,3 +54,22 @@ def test_output_dir_defaults_under_the_cwd_not_the_installed_package(monkeypatch
     monkeypatch.delenv("VOICE_IO_OUTPUT_DIR", raising=False)
     importlib.reload(voice_io)
     assert voice_io.OUTPUT_DIR == Path.cwd() / "output"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_hosted_call_writes_nothing_to_stdout(monkeypatch, tmp_path, capfd):
+    """stdout is the MCP JSON-RPC channel. A real (unmocked) litellm call
+    against a closed local port must fail without printing into it -
+    litellm's default is a multi-line "Give Feedback" banner."""
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_test_key_never_sent_anywhere")
+    monkeypatch.setenv("GROQ_API_BASE", "http://localhost:9")  # discard port: nothing listens here
+    monkeypatch.setattr(voice_io, "HOSTED_MAX_RETRIES", 0)
+    audio = tmp_path / "clip.wav"
+    audio.write_bytes(voice_io._tiny_silent_wav().read())
+
+    with pytest.raises(ToolError) as excinfo:
+        await voice_io.speech_to_text(str(audio))
+
+    assert "Speech-to-text failed" in str(excinfo.value)
+    assert "gsk_test_key_never_sent_anywhere" not in str(excinfo.value)
+    assert capfd.readouterr().out == ""

@@ -14,11 +14,22 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10  # olculen en uzun kosu 27 sn
+    # En dusuk ve en yuksek desteklenen surum. 3.10 destegi kagit uzerinde
+    # vardi ama litellm 3.10'da import edilemiyordu; bunu hicbir sey
+    # denemedigi icin kimse fark etmedi.
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    name: test (Python ${{ matrix.python }})
     steps:
       - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+        with:
+          python-version: ${{ matrix.python }}
 
       - name: Install dependencies
         run: uv sync --group dev
@@ -26,17 +37,47 @@ jobs:
       - name: Run tests
         run: uv run pytest -v
 
+  # Normal test isi yerel yedekleri (Kokoro, faster-whisper) kurmuyor, o
+  # yuzden test_local_integration.py'deki gercek-model testleri orada hep
+  # atlaniyor. Bu is ekstralari kurup ayni testleri GERCEKTEN kosturuyor
+  # ve tek bir atlama bile olursa kirmizi yaniyor.
+  yerel:
+    name: Yerel yedekler (gercek Kokoro + faster-whisper)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+
+      - name: espeak-ng (Kokoro'nun fonemleyicisi)
+        run: sudo apt-get update -q && sudo apt-get install -y -q espeak-ng
+
+      - name: Ekstralarla kur
+        run: uv sync --group dev --extra local-tts --extra local-stt
+
+      - name: Gercek-model testleri, atlamasiz
+        run: |
+          set -o pipefail
+          uv run pytest tests/test_local_integration.py -v -rs | tee /tmp/yerel.txt
+          if grep -q SKIPPED /tmp/yerel.txt; then
+            echo "::error::Ekstralar kurulu oldugu halde bir yerel test atlandi"
+            exit 1
+          fi
+
   # `yayinla.yml` yalniz `v*` etiketinde kosuyor, yani paketleme bozulursa
   # bunu ancak yayinlamaya calistigin an ogrenirsin. Kardes depo mcp-vet'te
   # tam olarak bu oldu: 244 test yesilken `uv build` calismiyordu, cunku
   # hicbir sey paketlemeyi denemiyordu. Bu is onu her push'a tasiyor.
   paket:
     runs-on: ubuntu-latest
+    timeout-minutes: 10  # olculen en uzun kosu 20 sn
     steps:
       - uses: actions/checkout@v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
       - name: Paket derleniyor mu
         run: uv build
@@ -61,9 +102,10 @@ jobs:
   denetim:
     name: mcp-vet (kendi sunucumuza kendi aracimiz)
     runs-on: ubuntu-latest
+    timeout-minutes: 10  # olculen en uzun kosu 10 sn
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
       # Ayni hesaptaki mcp-vet: bir MCP sunucusunun ne yapabildigini
       # kaynaktan cikariyor -- hangi kimlik bilgilerine dokunuyor, nereye

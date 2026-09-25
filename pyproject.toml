@@ -22,14 +22,16 @@ classifiers = [
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Multimedia :: Sound/Audio :: Speech",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-requires-python = ">=3.10"
+# 3.11, not 3.10: litellm (>=1.97) imports typing.NotRequired, which only
+# exists from 3.11 - on 3.10 `import voice_io` fails before the server
+# starts. CI runs the suite on the lowest and highest version below.
+requires-python = ">=3.11"
 dependencies = [
     "litellm>=1.97.0",
     "mcp[cli]>=2.1,<3",
