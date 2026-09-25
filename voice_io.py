@@ -114,6 +114,12 @@ _LOCAL_STT_MODEL_SIZE = "base"
 _local_stt_model = None  # lazy singleton
 _local_stt_lock = threading.Lock()
 
+# Why the last local attempt failed, keyed "tts"/"stt". The local functions
+# never raise (they report False/None), so this is how the tool can tell
+# "extra not installed" apart from "installed, but the model download or
+# synthesis failed" - two situations that need opposite advice.
+_local_errors: dict[str, str] = {}
+
 
 def _flush_stray_stdout() -> None:
     """Push out anything local-model code print()ed, while it can still do
@@ -169,6 +175,7 @@ def _local_text_to_speech(text: str, filepath: Path, voice: str = "af_heart") ->
             segments.append(audio)
 
         if not segments:
+            _local_errors["tts"] = "Kokoro produced no audio for this text"
             return False
 
         combined = np.concatenate(segments)
@@ -176,6 +183,7 @@ def _local_text_to_speech(text: str, filepath: Path, voice: str = "af_heart") ->
         return True
     except Exception as e:
         logger.warning("local TTS fallback unavailable: %s", e)
+        _local_errors["tts"] = str(e) or type(e).__name__
         return False
     finally:
         _flush_stray_stdout()
@@ -201,6 +209,7 @@ def _local_speech_to_text(audio: str | io.BytesIO) -> str | None:
         return " ".join(segment.text.strip() for segment in segments)
     except Exception as e:
         logger.warning("local STT fallback unavailable: %s", e)
+        _local_errors["stt"] = str(e) or type(e).__name__
         return None
     finally:
         _flush_stray_stdout()
@@ -297,7 +306,9 @@ def _redact(text: str, secret: str | None) -> str:
     return text.replace(secret, "***")
 
 
-def _unavailable(action: str, hosted_error: str | None, local_extra: str) -> ToolError:
+def _unavailable(
+    action: str, hosted_error: str | None, local_extra: str, module: str, local_name: str, local_error: str | None
+) -> ToolError:
     """The identical 'both tiers failed' error both tools raise - factored
     out once so text_to_speech and speech_to_text can't drift apart in
     wording as this contract evolves.
@@ -307,9 +318,18 @@ def _unavailable(action: str, hosted_error: str | None, local_extra: str) -> Too
     lists API failures there explicitly). Returned as a plain string it
     looked like a success to every client that checks the flag."""
     detail = hosted_error or f"{GROQ_API_KEY_ENV} not set (environment or .env)"
+    installed, _ = _probe_local_dependency(module)
+    if not installed:
+        return ToolError(
+            f"{action} failed (Groq: {detail}) and no local fallback available "
+            f"(install the `{local_extra}` extra to enable one)."
+        )
+    # Installed but failed - most often the first-use weight download
+    # (Hugging Face unreachable) or a missing system package. Telling this
+    # user to install what they already have would send them in a circle.
     return ToolError(
-        f"{action} failed (Groq: {detail}) and no local fallback available "
-        f"(install the `{local_extra}` extra to enable one)."
+        f"{action} failed (Groq: {detail}) and the local fallback ({local_name}) "
+        f"failed too: {local_error or 'see the server log'}"
     )
 
 
@@ -375,7 +395,13 @@ def _probe_local_dependency(module_name: str) -> tuple[bool, str]:
     """Check whether an optional local-fallback dependency is importable,
     without actually loading the (large, slow-to-load-on-first-use) model
     itself - a full load would defeat the point of a quick health check."""
-    if importlib.util.find_spec(module_name) is None:
+    try:
+        found = importlib.util.find_spec(module_name) is not None
+    except (ImportError, ValueError):
+        # find_spec raises for a module that is already imported but has no
+        # __spec__ (stubs, some vendored shims) - it is importable, then.
+        found = module_name in sys.modules
+    if not found:
         return False, "not installed (optional extra not enabled)"
     return True, "installed"
 
@@ -489,11 +515,14 @@ async def text_to_speech(
                     part.unlink(missing_ok=True)
 
     local_path = OUTPUT_DIR / f"speech_{stamp}.wav"
+    _local_errors.pop("tts", None)
     ok = await asyncio.to_thread(_local_text_to_speech, text, local_path)
     if ok:
         return f"Audio saved to {local_path} (model: local:{_LOCAL_TTS_MODEL_NAME}){note}"
 
-    raise _unavailable("Text-to-speech", groq_error, "local-tts")
+    raise _unavailable(
+        "Text-to-speech", groq_error, "local-tts", "kokoro", _LOCAL_TTS_MODEL_NAME, _local_errors.get("tts")
+    )
 
 
 @mcp.tool()
@@ -545,11 +574,14 @@ async def speech_to_text(audio_path: str, language: str | None = None) -> str:
             groq_error = _redact(str(e), key)
             logger.warning("Groq STT failed, falling back to local: %s", groq_error)
 
+    _local_errors.pop("stt", None)
     text = await asyncio.to_thread(_local_speech_to_text, _named_buffer(data, name))
     if text is not None:
         return f"{text}\n\n(model: local:{_LOCAL_STT_MODEL_NAME})"
 
-    raise _unavailable("Speech-to-text", groq_error, "local-stt")
+    raise _unavailable(
+        "Speech-to-text", groq_error, "local-stt", "faster_whisper", _LOCAL_STT_MODEL_NAME, _local_errors.get("stt")
+    )
 
 
 @mcp.tool()

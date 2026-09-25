@@ -256,3 +256,25 @@ async def test_a_hard_link_is_indistinguishable_from_the_file_it_names(
     await voice_io.speech_to_text(audio_path=str(alias))
 
     assert mock.await_args.kwargs["file"].read() == secret_file.read_bytes()
+
+
+@pytest.mark.asyncio
+async def test_an_installed_but_failing_local_tier_is_not_told_to_install_itself(
+    no_groq_key, sample_audio, monkeypatch
+):
+    """Seen in a real keyless run: faster-whisper installed, its first-use
+    weight download blocked - and the error said "install the local-stt
+    extra", which the user had just done."""
+    def failing_local(audio):
+        voice_io._local_errors["stt"] = "403 Forbidden from huggingface.co"
+        return None
+
+    monkeypatch.setattr(voice_io, "_local_speech_to_text", failing_local)
+    monkeypatch.setattr(voice_io, "_probe_local_dependency", lambda module: (True, "installed"))
+
+    with pytest.raises(ToolError) as excinfo:
+        await voice_io.speech_to_text(audio_path=sample_audio)
+
+    message = str(excinfo.value)
+    assert "local fallback (faster-whisper) failed too: 403 Forbidden from huggingface.co" in message
+    assert "install the" not in message

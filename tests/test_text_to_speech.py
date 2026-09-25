@@ -298,3 +298,33 @@ async def test_output_format_schema_is_an_enum():
     tools = {t.name: t for t in await voice_io.mcp.list_tools()}
     schema = tools["text_to_speech"].input_schema["properties"]["output_format"]
     assert schema.get("enum") == ["wav", "mp3"]
+
+
+@pytest.mark.asyncio
+async def test_an_installed_but_failing_local_tier_reports_its_own_error(no_groq_key, tmp_path, monkeypatch):
+    monkeypatch.setattr(voice_io, "OUTPUT_DIR", tmp_path)
+    voice_io._local_errors["tts"] = "stale error from an earlier call"
+
+    def failing_local(text, filepath, voice="af_heart"):
+        voice_io._local_errors["tts"] = "espeak-ng not found"
+        return False
+
+    monkeypatch.setattr(voice_io, "_local_text_to_speech", failing_local)
+    monkeypatch.setattr(voice_io, "_probe_local_dependency", lambda module: (True, "installed"))
+
+    with pytest.raises(ToolError, match=r"local fallback \(kokoro-82m\) failed too: espeak-ng not found"):
+        await voice_io.text_to_speech(text="hello")
+
+
+@pytest.mark.asyncio
+async def test_a_stale_local_error_is_not_reported_for_a_new_call(no_groq_key, tmp_path, monkeypatch):
+    monkeypatch.setattr(voice_io, "OUTPUT_DIR", tmp_path)
+    voice_io._local_errors["tts"] = "stale error from an earlier call"
+    monkeypatch.setattr(voice_io, "_local_text_to_speech", lambda text, filepath, voice="af_heart": False)
+    monkeypatch.setattr(voice_io, "_probe_local_dependency", lambda module: (True, "installed"))
+
+    with pytest.raises(ToolError) as excinfo:
+        await voice_io.text_to_speech(text="hello")
+
+    assert "stale" not in str(excinfo.value)
+    assert "see the server log" in str(excinfo.value)

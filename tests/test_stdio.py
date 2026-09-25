@@ -129,6 +129,7 @@ def test_stray_output_from_a_local_model_never_reaches_the_protocol_stream(tmp_p
     assert by_id[2]["isError"] is True
     assert "Text-to-speech failed" in by_id[2]["content"][0]["text"]
     assert "GROQ_API_KEY not set" in by_id[2]["content"][0]["text"]
+    assert "local fallback (kokoro-82m) failed too: Kokoro produced no audio" in by_id[2]["content"][0]["text"]
     assert by_id[3]["isError"] is True
     assert "Speech-to-text failed" in by_id[3]["content"][0]["text"]
 
