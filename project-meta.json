@@ -36,11 +36,11 @@
     "voice",
     "whisper"
   ],
-  "summary": "Speech in and speech out, needing no API key at all: Groq's free hosted tier when a key is set, Kokoro-82M and faster-whisper locally when it is not. Transcription checks extension and size before it ever opens the file, so \"transcribe the audio at .env\" is refused locally instead of uploaded. 4 tools, 53 tests.",
+  "summary": "Speech in and speech out, needing no API key at all: Groq's free hosted tier when a key is set, Kokoro-82M and faster-whisper locally when it is not. Transcription checks the extension (a symlink's target too), file type and size before a byte is uploaded, so \"transcribe the audio at .env\" is refused locally instead of uploaded. 4 tools, 60 tests.",
   "key_features": [
     "Speech in and speech out, needing no API key at all",
     "Groq's free hosted tier when a key is set; Kokoro-82M and faster-whisper locally when it is not",
-    "Transcription checks extension and size before it ever opens the file, so 'transcribe the audio at .env' is refused locally instead of uploaded",
+    "Transcription checks the extension (a symlink's target too), file type and size before a byte is uploaded, so 'transcribe the audio at .env' is refused locally instead of uploaded",
     "4 tools, with known limitations and roadmap written down"
   ],
   "media": {
@@ -50,8 +50,8 @@
     "videos": []
   },
   "tests": {
-    "count": 53,
-    "source": "`53 passed, 3 skipped`",
+    "count": 60,
+    "source": "`60 passed, 3 skipped` (the 3 real-model tests run in CI's `yerel` job)",
     "measured": "2026-09-25"
   },
   "ci": {
@@ -63,7 +63,7 @@
   },
   "docs": {
     "readme": "README.md",
-    "changelog": null,
+    "changelog": "CHANGELOG.md",
     "version_history": null,
     "roadmap": null,
     "security": "SECURITY.md",
