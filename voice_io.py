@@ -30,7 +30,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-import httpx
 import litellm
 from dotenv import load_dotenv
 from mcp.server import MCPServer
@@ -84,11 +83,6 @@ MAX_AUDIO_BYTES = 25 * 1024 * 1024
 # quick "is it alive" check, not a real generation, so failing fast is correct.
 HEALTH_PROBE_TIMEOUT = 8.0
 
-# The default health check asks Groq's model list whether the two model ids
-# still exist instead of generating speech and uploading audio: a listing
-# costs no audio quota, while a real probe spends one TTS and one STT request
-# (Groq bills a transcription as at least 10 seconds) every time it runs.
-_http_transport: httpx.AsyncBaseTransport | None = None  # tests inject a MockTransport
 
 # Upper bound on text_to_speech input. Orpheus takes 200 characters per
 # request, so this is at most 20 hosted requests for one call - past that a
@@ -355,40 +349,6 @@ def _probe_local_dependency(module_name: str) -> tuple[bool, str]:
     return True, "installed"
 
 
-async def _probe_groq_models() -> dict[str, tuple[bool, str]]:
-    """Quota-free check: one GET of Groq's model list, then look up both
-    model ids in it. Confirms the key is accepted and neither name has
-    drifted, without generating speech or uploading audio."""
-    key = os.environ.get(GROQ_API_KEY_ENV)
-    models = (TTS_MODEL, STT_MODEL)
-    if not key:
-        return {m: (False, "not configured") for m in models}
-    try:
-        async with httpx.AsyncClient(timeout=HEALTH_PROBE_TIMEOUT, transport=_http_transport) as client:
-            # Literal, fixed destination (not configurable): the key only
-            # ever goes to Groq itself, and an auditor can see where.
-            response = await client.get(
-                "https://api.groq.com/openai/v1/models", headers={"Authorization": f"Bearer {key}"}
-            )
-    except Exception as e:
-        detail = f"error: {_redact(str(e), key)}"
-        return {m: (False, detail) for m in models}
-    if response.status_code in (401, 403):
-        return {m: (False, f"key rejected (HTTP {response.status_code})") for m in models}
-    if response.status_code != 200:
-        return {m: (False, f"error: model list answered HTTP {response.status_code}") for m in models}
-    try:
-        listed = {item["id"] for item in response.json()["data"]}
-    except Exception:
-        return {m: (False, "error: unexpected model list response") for m in models}
-    return {
-        m: (True, "listed (model lookup only - run with live=true to test a real request)")
-        if m.removeprefix("groq/") in listed
-        else (False, "not in Groq's model list - the name has drifted or the model was retired")
-        for m in models
-    }
-
-
 async def _probe_groq_tts() -> tuple[bool, str]:
     key = os.environ.get(GROQ_API_KEY_ENV)
     if not key:
@@ -574,25 +534,18 @@ async def list_voices() -> str:
 
 
 @mcp.tool()
-async def check_provider_health(live: bool = False) -> str:
-    """Check Groq's hosted TTS/STT models and whether each local fallback's
-    optional dependency is installed - without loading a local model
-    (kokoro/faster-whisper can take real time and disk space on first use).
+async def check_provider_health() -> str:
+    """Check whether Groq's hosted TTS/STT endpoints answer and whether each
+    local fallback's optional dependency is installed - without loading a
+    local model (kokoro/faster-whisper can take real time and disk space on
+    first use).
 
-    Args:
-        live: False (default) only looks both model ids up in Groq's model
-            list: confirms the key works and the names still exist, and
-            spends no speech or transcription quota. True sends one real
-            TTS request and one real transcription of 0.1s of silence -
-            this spends free-tier quota each time, but also catches
-            per-model problems a listing cannot (e.g. terms not accepted
-            in the Groq console).
+    Costs free-tier quota: with GROQ_API_KEY set, every call sends one real
+    TTS request ("hi") and one transcription of 0.1s of silence (Groq bills
+    a transcription as at least 10 seconds). Run it when something looks
+    wrong, not before every other call.
     """
-    if live:
-        tts_result, stt_result = await asyncio.gather(_probe_groq_tts(), _probe_groq_stt())
-    else:
-        listed = await _probe_groq_models()
-        tts_result, stt_result = listed[TTS_MODEL], listed[STT_MODEL]
+    tts_result, stt_result = await asyncio.gather(_probe_groq_tts(), _probe_groq_stt())
     local_tts_ok, local_tts_detail = _probe_local_dependency("kokoro")
     local_stt_ok, local_stt_detail = _probe_local_dependency("faster_whisper")
 

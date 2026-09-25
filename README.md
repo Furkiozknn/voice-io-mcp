@@ -34,7 +34,7 @@ Every other tool in this ecosystem's [nvidia-nim-mcp](https://github.com/Furkioz
 | 🔊 `text_to_speech` | Text (up to 4000 characters) → `.wav` file, saved to `output/` | Orpheus (`canopylabs/orpheus-v1-english`) | Kokoro-82M (Apache-2.0) |
 | 🎙️ `speech_to_text` | Audio file → transcript (refuses non-audio extensions, symlinks to non-audio files, directories/FIFOs/devices and files over 25MB before reading a byte) | `whisper-large-v3-turbo` | faster-whisper (MIT) |
 | 🗣️ `list_voices` | List known Groq Orpheus voice names for `text_to_speech`'s `voice` argument | — (static list) | — |
-| 🩺 `check_provider_health` | Looks both hosted models up in Groq's model list (no audio quota spent; `live=true` sends real requests) + local-dependency availability check | both | both |
+| 🩺 `check_provider_health` | Liveness probe for both hosted endpoints (spends one tiny TTS + one STT request of free-tier quota per call) + local-dependency availability check | both | both |
 
 ## 🔄 The fallback chain
 
@@ -86,7 +86,7 @@ claude mcp add --transport stdio voice-io -- uv run --project /path/to/this/repo
 
 `voice-io-mcp` is the console command the project installs into its own environment, so this works from any directory. (`uv run --project … voice_io.py` does not: `--project` picks the environment, but the script path is still looked up in the directory Claude Code starts the server from.)
 
-**5. Run `check_provider_health` once, after setting `GROQ_API_KEY`.** The model/voice names this server wires in (`canopylabs/orpheus-v1-english`, `whisper-large-v3-turbo`) were transcribed from Groq's public docs but never live-verified with a real key while building this — confirm they're still current before relying on the hosted tier. By default the check only looks both ids up in Groq's model list, which spends no speech or transcription quota; `live=true` sends one real TTS request and one transcription of 0.1 s of silence (Groq bills a transcription as at least 10 seconds), which also catches per-model problems such as terms not yet accepted in the Groq console. This is the same "don't trust a name from memory" discipline `nvidia-nim-mcp` documents for its own model list. If a name has drifted, the local fallback still works regardless (once its extra is installed).
+**5. Run `check_provider_health` once, after setting `GROQ_API_KEY`.** The model/voice names this server wires in (`canopylabs/orpheus-v1-english`, `whisper-large-v3-turbo`) were transcribed from Groq's public docs but never live-verified with a real key while building this — confirm they're still current before relying on the hosted tier. Each run sends one real TTS request ("hi") and one transcription of 0.1 s of silence — Groq bills a transcription as at least 10 seconds — so it spends a little free-tier quota every time; run it when something looks wrong, not before every call. This is the same "don't trust a name from memory" discipline `nvidia-nim-mcp` documents for its own model list. If a name has drifted, the local fallback still works regardless (once its extra is installed).
 
 ## ▶️ Example usage
 
