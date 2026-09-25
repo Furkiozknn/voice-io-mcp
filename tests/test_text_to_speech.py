@@ -327,4 +327,4 @@ async def test_a_stale_local_error_is_not_reported_for_a_new_call(no_groq_key, t
         await voice_io.text_to_speech(text="hello")
 
     assert "stale" not in str(excinfo.value)
-    assert "see the server log" in str(excinfo.value)
+    assert "no reason recorded" in str(excinfo.value)

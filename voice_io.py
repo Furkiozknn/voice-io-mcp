@@ -329,7 +329,8 @@ def _unavailable(
     # user to install what they already have would send them in a circle.
     return ToolError(
         f"{action} failed (Groq: {detail}) and the local fallback ({local_name}) "
-        f"failed too: {local_error or 'see the server log'}"
+        f"failed too: {local_error or 'no reason recorded'} (its first use downloads "
+        f"model weights from Hugging Face; details in the server log)"
     )
 
 
