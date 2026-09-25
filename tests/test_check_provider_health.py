@@ -20,8 +20,8 @@ async def test_reports_ok_when_groq_probes_succeed(groq_key, fake_aspeech, fake_
 
     report = await voice_io.check_provider_health()
 
-    assert "OK  groq/canopylabs/orpheus-v1-english - ok" in report or "OK groq/canopylabs/orpheus-v1-english - ok" in report
-    assert "OK  groq/whisper-large-v3-turbo - ok" in report or "OK groq/whisper-large-v3-turbo - ok" in report
+    assert "OK  groq/canopylabs/orpheus-v1-english - ok" in report
+    assert "OK  groq/whisper-large-v3-turbo - ok" in report
 
 
 @pytest.mark.asyncio

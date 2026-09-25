@@ -101,19 +101,22 @@ async def test_reports_clear_error_when_groq_fails_and_no_local_fallback_install
     # (optional extra) - exercises the real ImportError path.
     fake_atranscription(side_effect=RuntimeError("Groq overloaded"))
 
-    result = await voice_io.speech_to_text(audio_path=sample_audio)
+    with pytest.raises(ToolError) as excinfo:
+        await voice_io.speech_to_text(audio_path=sample_audio)
 
-    assert "Speech-to-text failed" in result
-    assert "Groq overloaded" in result
-    assert "local-stt" in result
+    message = str(excinfo.value)
+    assert "Speech-to-text failed" in message
+    assert "Groq overloaded" in message
+    assert "local-stt" in message
 
 
 @pytest.mark.asyncio
 async def test_reports_clear_error_when_no_key_and_no_local_fallback_installed(no_groq_key, sample_audio):
-    result = await voice_io.speech_to_text(audio_path=sample_audio)
+    with pytest.raises(ToolError) as excinfo:
+        await voice_io.speech_to_text(audio_path=sample_audio)
 
-    assert "GROQ_API_KEY not set" in result
-    assert "local-stt" in result
+    assert "GROQ_API_KEY not set" in str(excinfo.value)
+    assert "local-stt" in str(excinfo.value)
 
 
 def test_local_speech_to_text_returns_none_when_dependency_missing(sample_audio):
@@ -224,3 +227,32 @@ async def test_a_nonexistent_non_audio_path_is_refused_without_probing_it():
     # answer does not reveal whether some private file exists.
     with pytest.raises(ToolError, match="not a recognized audio format"):
         await voice_io.speech_to_text(audio_path="/nonexistent/private.key")
+
+
+@pytest.mark.asyncio
+async def test_a_nul_byte_in_the_path_is_refused_with_a_designed_message():
+    # Without the explicit check Path.resolve raises ValueError, which the
+    # SDK masks as a bare "Error executing tool speech_to_text".
+    with pytest.raises(ToolError, match="NUL byte"):
+        await voice_io.speech_to_text(audio_path="/tmp/memo\x00.wav")
+
+
+@pytest.mark.asyncio
+async def test_a_hard_link_is_indistinguishable_from_the_file_it_names(
+    groq_key, fake_atranscription, tmp_path, secret_file
+):
+    """Documents the limit of the path checks rather than a guarantee: a
+    hard link *is* a second name for the same file, so `notes.wav` hard-
+    linked to a secret is read like any other audio-named regular file.
+    The README says so under Known limitations; if this ever starts
+    failing, that text is out of date."""
+    mock = fake_atranscription(text="uploaded")
+    alias = tmp_path / "notes.wav"
+    try:
+        os.link(secret_file, alias)
+    except (OSError, NotImplementedError):
+        pytest.skip("hard links not available here")
+
+    await voice_io.speech_to_text(audio_path=str(alias))
+
+    assert mock.await_args.kwargs["file"].read() == secret_file.read_bytes()

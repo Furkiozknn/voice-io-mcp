@@ -94,21 +94,26 @@ async def test_reports_clear_error_when_groq_fails_and_no_local_fallback_install
     monkeypatch.setattr(voice_io, "OUTPUT_DIR", tmp_path)
     fake_aspeech(side_effect=RuntimeError("Groq overloaded"))
 
-    result = await voice_io.text_to_speech(text="hello world")
+    # Raised, not returned: no audio came out, so the MCP result must carry
+    # isError=true - as a plain string it read as a success to clients.
+    with pytest.raises(ToolError) as excinfo:
+        await voice_io.text_to_speech(text="hello world")
 
-    assert "Text-to-speech failed" in result
-    assert "Groq overloaded" in result
-    assert "local-tts" in result
+    message = str(excinfo.value)
+    assert "Text-to-speech failed" in message
+    assert "Groq overloaded" in message
+    assert "local-tts" in message
 
 
 @pytest.mark.asyncio
 async def test_reports_clear_error_when_no_key_and_no_local_fallback_installed(no_groq_key, tmp_path, monkeypatch):
     monkeypatch.setattr(voice_io, "OUTPUT_DIR", tmp_path)
 
-    result = await voice_io.text_to_speech(text="hello world")
+    with pytest.raises(ToolError) as excinfo:
+        await voice_io.text_to_speech(text="hello world")
 
-    assert "GROQ_API_KEY not set" in result
-    assert "local-tts" in result
+    assert "GROQ_API_KEY not set" in str(excinfo.value)
+    assert "local-tts" in str(excinfo.value)
 
 
 @pytest.mark.asyncio

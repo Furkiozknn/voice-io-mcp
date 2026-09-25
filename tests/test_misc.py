@@ -4,6 +4,7 @@ import importlib
 from pathlib import Path
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 import voice_io
 
@@ -66,8 +67,9 @@ async def test_a_failing_hosted_call_writes_nothing_to_stdout(monkeypatch, tmp_p
     audio = tmp_path / "clip.wav"
     audio.write_bytes(voice_io._tiny_silent_wav().read())
 
-    result = await voice_io.speech_to_text(str(audio))
+    with pytest.raises(ToolError) as excinfo:
+        await voice_io.speech_to_text(str(audio))
 
-    assert "Speech-to-text failed" in result
-    assert "gsk_test_key_never_sent_anywhere" not in result
+    assert "Speech-to-text failed" in str(excinfo.value)
+    assert "gsk_test_key_never_sent_anywhere" not in str(excinfo.value)
     assert capfd.readouterr().out == ""

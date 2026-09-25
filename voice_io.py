@@ -219,6 +219,10 @@ def _read_audio_file(audio_path: str) -> tuple[bytes, str]:
     - at most cap+1 bytes are read, so a file that grows after the fstat is
       still refused rather than uploaded past the limit.
     """
+    # A NUL byte makes every os call raise ValueError, which the SDK would
+    # mask as a bare "Error executing tool" - say what is wrong instead.
+    if "\x00" in audio_path:
+        raise ToolError("Rejected: path contains a NUL byte")
     path = Path(audio_path).expanduser()
     _check_audio_suffix(path.name, "path")
     try:
@@ -271,14 +275,19 @@ def _redact(text: str, secret: str | None) -> str:
     return text.replace(secret, "***")
 
 
-def _format_unavailable_message(action: str, hosted_error: str | None, local_extra: str) -> str:
-    """The identical 'both tiers failed' message shape both tools return -
-    factored out once so text_to_speech and speech_to_text can't drift
-    apart in wording as this contract evolves."""
-    detail = hosted_error or f"{GROQ_API_KEY_ENV} not set in .env"
-    return (
+def _unavailable(action: str, hosted_error: str | None, local_extra: str) -> ToolError:
+    """The identical 'both tiers failed' error both tools raise - factored
+    out once so text_to_speech and speech_to_text can't drift apart in
+    wording as this contract evolves.
+
+    Raised, not returned: a call that produced no audio / no transcript is
+    a failed tool call, and MCP reports that with isError=true (the spec
+    lists API failures there explicitly). Returned as a plain string it
+    looked like a success to every client that checks the flag."""
+    detail = hosted_error or f"{GROQ_API_KEY_ENV} not set (environment or .env)"
+    return ToolError(
         f"{action} failed (Groq: {detail}) and no local fallback available "
-        f"(run `uv sync --extra {local_extra}` to enable one)."
+        f"(install the `{local_extra}` extra to enable one)."
     )
 
 
@@ -462,7 +471,7 @@ async def text_to_speech(
     if ok:
         return f"Audio saved to {local_path} (model: local:{_LOCAL_TTS_MODEL_NAME}){note}"
 
-    return _format_unavailable_message("Text-to-speech", groq_error, "local-tts")
+    raise _unavailable("Text-to-speech", groq_error, "local-tts")
 
 
 @mcp.tool()
@@ -486,14 +495,12 @@ async def speech_to_text(audio_path: str, language: str | None = None) -> str:
     Raises:
         ToolError: if the path does not exist, is not a regular file with
             a recognized audio extension, or exceeds the 25MB upload limit
-            - the same contract
-            text_to_speech uses for its own invalid arguments.
+            - the same contract text_to_speech uses for its own invalid
+            arguments - and also when neither tier could transcribe it.
     """
-    # ToolError, not a plain return string: bad input is the same class of
-    # failure text_to_speech already raises ToolError for, and the two tools
-    # must not disagree about how an invalid argument is reported. A tier
-    # that merely failed (Groq down, no local extra) still returns a string -
-    # that is a result, not a caller mistake.
+    # ToolError for bad input and for "no tier could do it" alike, exactly
+    # as text_to_speech does: the two tools must not disagree about how a
+    # failed call is reported, and both cases are isError=true in MCP.
     # This tool reads whatever local file it's pointed at and uploads its
     # bytes to Groq (a third party) - the allow-list, file-type and size
     # checks in _read_audio_file stop it from being turned into a generic
@@ -520,7 +527,7 @@ async def speech_to_text(audio_path: str, language: str | None = None) -> str:
     if text is not None:
         return f"{text}\n\n(model: local:{_LOCAL_STT_MODEL_NAME})"
 
-    return _format_unavailable_message("Speech-to-text", groq_error, "local-stt")
+    raise _unavailable("Speech-to-text", groq_error, "local-stt")
 
 
 @mcp.tool()
