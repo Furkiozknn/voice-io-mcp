@@ -4,6 +4,9 @@
 
 # voice-io-mcp
 
+<p align="center"><img src="docs/reel/reel.gif" alt="voice-io-mcp - 15-second motion reel" width="720"></p>
+<p align="center"><sub><a href="docs/reel/reel.mp4">MP4 version with sound</a></sub></p>
+
 [![License: MIT](https://img.shields.io/badge/license-MIT-76b900?style=flat-square)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-76b900?style=flat-square)](pyproject.toml)
 [![MCP Server](https://img.shields.io/badge/MCP-server-76b900?style=flat-square)](https://modelcontextprotocol.io)
