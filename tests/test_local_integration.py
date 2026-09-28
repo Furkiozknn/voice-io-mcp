@@ -48,3 +48,16 @@ def test_real_faster_whisper_transcribes_without_crashing(tmp_path):
 
     assert result is not None
     assert isinstance(result, str)
+
+
+@pytest.mark.skipif(
+    not _FASTER_WHISPER_INSTALLED, reason="local-stt extra not installed (uv sync --extra local-stt)"
+)
+def test_real_faster_whisper_accepts_the_in_memory_buffer_speech_to_text_passes(tmp_path):
+    # speech_to_text hands the local tier the bytes it already validated,
+    # never the path - this proves faster-whisper really decodes that.
+    buf = voice_io._named_buffer(voice_io._tiny_silent_wav().read(), "silence.wav")
+
+    result = voice_io._local_speech_to_text(buf)
+
+    assert isinstance(result, str)
