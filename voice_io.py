@@ -31,24 +31,42 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-import litellm
 from dotenv import load_dotenv
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 load_dotenv()
 
-# This server speaks JSON-RPC over stdout. On every failed provider call
-# litellm otherwise print()s a "Give Feedback / Get Help" banner to stdout,
-# i.e. into the protocol stream, exactly when a fallback is about to run.
-litellm.suppress_debug_info = True
+
+class _LazyLitellm:
+    """`import litellm` costs 3-17 s (measured: 17 s to import voice_io on
+    Windows, 14 s of it litellm). An MCP client waits for `initialize` while
+    the server imports, and Claude Code's default connect timeout is 30 s, so
+    the server would sit close to the edge before answering anything. This
+    imports it on the first attribute access instead, i.e. on the first real
+    tool call that needs it. Tests patch attributes on it as before.
+
+    This server speaks JSON-RPC over stdout. On every failed provider call
+    litellm otherwise print()s a "Give Feedback / Get Help" banner to stdout,
+    i.e. into the protocol stream, exactly when a fallback is about to run;
+    suppress_debug_info switches that off.
+    """
+
+    def __getattr__(self, name):
+        import litellm as real
+
+        real.suppress_debug_info = True
+        return getattr(real, name)
+
+
+litellm = _LazyLitellm()
 
 logger = logging.getLogger(__name__)
 
 mcp = MCPServer("voice-io")
 
 # Where generated audio lands. Deliberately NOT `Path(__file__).parent`:
-# for anyone who `pip install`s this server that directory is inside
+# for anyone who installs this server with pip that directory is inside
 # site-packages, which is read-only on many installs and pollutes the
 # environment on the rest. Default to a directory under the process's
 # current working directory instead, overridable with VOICE_IO_OUTPUT_DIR.
@@ -228,8 +246,8 @@ def _check_audio_suffix(name: str, shown: str) -> None:
     suffix = Path(name).suffix
     if suffix.lower() not in ALLOWED_AUDIO_EXTENSIONS:
         raise ToolError(
-            f"Rejected: {shown} has {suffix or '(no extension)'}, which is not a recognized audio "
-            f"format (expected one of {sorted(ALLOWED_AUDIO_EXTENSIONS)})"
+            f"Rejected: {shown} has {f'the extension {suffix}' if suffix else 'no extension'}: "
+            f"not a recognized audio format (expected one of {sorted(ALLOWED_AUDIO_EXTENSIONS)})"
         )
 
 
@@ -267,6 +285,10 @@ def _read_audio_file(audio_path: str) -> tuple[bytes, str]:
     try:
         fd = os.open(real, flags)
     except OSError as e:
+        # Windows refuses to open a directory with "Permission denied", which
+        # hides the actual mistake; POSIX opens it and the fstat below says so.
+        if real.is_dir():
+            raise ToolError(f"Rejected: {audio_path} is not a regular file") from None
         raise ToolError(f"Cannot open {audio_path}: {e.strerror or e}") from None
     try:
         st = os.fstat(fd)
@@ -626,16 +648,69 @@ async def check_provider_health() -> str:
     return "\n".join(lines)
 
 
-def main() -> None:
+_HELP = """voice-io-mcp - text-to-speech and speech-to-text as an MCP server (stdio).
+
+usage: voice-io-mcp [--check | --version | --help]
+
+  (no argument)  start the server on stdin/stdout. This is what an MCP client
+                 runs; started by hand it waits for JSON-RPC and prints nothing.
+  --check        print which providers can serve each tool, then exit. Exit 0
+                 when both tools have at least one OK line, 1 otherwise.
+                 With GROQ_API_KEY set it sends one tiny real TTS and one STT
+                 request to Groq (free-tier quota). Loads no local model.
+  --version      print the version and exit.
+
+Register with Claude Code (a key is optional, see the README):
+  claude mcp add voice-io -e GROQ_API_KEY=your-key -- voice-io-mcp
+"""
+
+
+def _check_ok(report: str) -> bool:
+    """True when both tool sections of a health report have an OK line."""
+    ok: dict[str, bool] = {"text_to_speech:": False, "speech_to_text:": False}
+    current = ""
+    for line in report.splitlines():
+        if line in ok:
+            current = line
+        elif current and line.startswith("  OK"):
+            ok[current] = True
+    return all(ok.values())
+
+
+def main(argv: list[str] | None = None) -> int | None:
     """Console entry point.
 
     A separate function because `[project.scripts]` wants a CALLABLE, not a
     module. Without it the package installs but cannot be run: the user
     would have to clone the repo and point at the file directly, which
     defeats the point of publishing it.
+
+    Flags exist for humans; an MCP client starts the server with none. Before
+    they existed `voice-io-mcp --help` silently started a server and waited
+    for JSON-RPC on stdin.
     """
-    mcp.run(transport="stdio")
+    args = sys.argv[1:] if argv is None else argv
+    if not args:
+        mcp.run(transport="stdio")
+        return None
+    if args in (["--help"], ["-h"]):
+        print(_HELP, end="")
+        return 0
+    if args == ["--version"]:
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            print(f"voice-io-mcp {version('voice-io-mcp')}")
+        except PackageNotFoundError:
+            print("voice-io-mcp (version unknown: not installed as a package)")
+        return 0
+    if args == ["--check"]:
+        report = asyncio.run(check_provider_health())
+        print(report)
+        return 0 if _check_ok(report) else 1
+    print(f"voice-io-mcp: unknown argument {' '.join(args)!r}", "run `voice-io-mcp --help`", sep="\n", file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
