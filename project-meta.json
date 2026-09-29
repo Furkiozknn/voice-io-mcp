@@ -36,7 +36,7 @@
     "voice",
     "whisper"
   ],
-  "summary": "Speech in and speech out, needing no API key at all: Groq's free hosted tier when a key is set, Kokoro-82M and faster-whisper locally when it is not. Transcription checks the extension (a symlink's target too), file type and size before a byte is uploaded, so \"transcribe the audio at .env\" is refused locally instead of uploaded. 4 tools, 60 tests.",
+  "summary": "Speech in and speech out, needing no API key at all: Groq's free hosted tier when a key is set, Kokoro-82M and faster-whisper locally when it is not. Transcription checks the extension (a symlink's target too), file type and size before a byte is uploaded, so \"transcribe the audio at .env\" is refused locally instead of uploaded. 4 tools, 69 tests.",
   "key_features": [
     "Speech in and speech out, needing no API key at all",
     "Groq's free hosted tier when a key is set; Kokoro-82M and faster-whisper locally when it is not",
@@ -46,13 +46,17 @@
   "media": {
     "hero": "assets/banner.svg",
     "screenshots": [],
-    "gifs": [],
-    "videos": []
+    "gifs": [
+      "docs/demo/demo.gif"
+    ],
+    "videos": [
+      "docs/demo/demo.mp4"
+    ]
   },
   "tests": {
-    "count": 60,
-    "source": "`60 passed, 3 skipped` (the 3 real-model tests run in CI's `yerel` job)",
-    "measured": "2026-09-25"
+    "count": 69,
+    "source": "`69 passed, 3 skipped` on Linux CI (the 3 real-model tests run in CI's `yerel` job)",
+    "measured": "2026-09-30"
   },
   "ci": {
     "workflows": [

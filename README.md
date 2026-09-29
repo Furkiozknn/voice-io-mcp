@@ -4,15 +4,33 @@
 
 # voice-io-mcp
 
-<p align="center"><img src="docs/reel/reel.gif" alt="voice-io-mcp - 15-second motion reel" width="720"></p>
-<p align="center"><sub><a href="docs/reel/reel.mp4">MP4 version with sound</a></sub></p>
+**Two MCP tools for Claude Code: `text_to_speech` and `speech_to_text`. Groq's free hosted endpoints first, a local model when there is no key or Groq is down.**
+
+</div>
+
+```bash
+claude mcp add voice-io -e GROQ_API_KEY=your-key -- uvx --python 3.11 --from git+https://github.com/Furkiozknn/voice-io-mcp voice-io-mcp
+```
+
+**What it needs, honestly:** [`uv`](https://docs.astral.sh/uv/) and Claude Code, plus one of two things to make actual audio. Either a free Groq key ([console.groq.com/keys](https://console.groq.com/keys), no card), or the local models: `voice-io-mcp[local-tts,local-stt]`, about 6 GB of downloads on Linux because Kokoro pulls in torch (see [Setup](#-setup)). With neither, the server still connects and every call answers with an error that says what to add, as in the demo below. Nothing is on PyPI yet, so uv installs from GitHub.
+
+<p align="center"><img src="docs/demo/demo.gif" alt="A terminal: voice-io-mcp --version, the health check listing four providers as FAIL because no key and no local extras are set, an MCP client session over stdio that lists four tools, refuses a path named .env and reports that text-to-speech has no provider, and the message for a wrong flag" width="760"></p>
+<p align="center"><sub>16 seconds, 4 commands, no key set, nothing typed by hand: <a href="docs/demo/komutlar.txt">the exact commands, output and exit codes</a>, replayed. <a href="docs/demo/demo.mp4">MP4</a></sub></p>
+
+The first result is quick once uv has it: from an empty uv cache `uvx` took 24.0 and 28.2 s to install and print the version, 5.3 to 5.8 s with a warm cache, and the server answers the client's `initialize` about 4 to 6 s after it starts (measured 30 September 2026, Windows 11, Python 3.11; [`docs/demo/kurulum.txt`](docs/demo/kurulum.txt), [`docs/DENETIM.md`](docs/DENETIM.md)). Claude Code waits 30 s for a server to connect by default, so that is the margin. `claude mcp list` should show `voice-io: … ✓ Connected`.
+
+| Use it when | Do not use it when |
+|---|---|
+| you want Claude Code to read a paragraph aloud or transcribe a voice memo, and would rather not depend on one provider | you need voice cloning, streaming or mp3 output: it writes `.wav` files and returns whole files ([limits](#-known-limitations--roadmap)) |
+| you have no API key and can spare the disk for local models: both tools still work | you need a long recording transcribed: files are capped at 25 MB |
+| the agent might be tricked into "transcribe the audio at `.env`": paths are checked before a byte is read or uploaded | a hosted request must never leave the machine: with `GROQ_API_KEY` set, audio is uploaded to Groq. Leave the key unset to stay fully local |
+
+<div align="center">
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-76b900?style=flat-square)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-76b900?style=flat-square)](pyproject.toml)
 [![MCP Server](https://img.shields.io/badge/MCP-server-76b900?style=flat-square)](https://modelcontextprotocol.io)
 [![Cost](https://img.shields.io/badge/cost-%240-76b900?style=flat-square)](#-setup)
-
-Text-to-speech and speech-to-text as two small MCP tools — Groq's free hosted endpoints first, a fully local, keyless model if Groq isn't reachable or configured at all.
 
 </div>
 
@@ -20,7 +38,7 @@ Every other tool in this ecosystem's [nvidia-nim-mcp](https://github.com/Furkioz
 
 ## ⚡ Quick start
 
-Needs [`uv`](https://docs.astral.sh/uv/) and Claude Code. Not on PyPI yet, so uv installs it straight from GitHub, no clone needed. Pick one:
+Pick one:
 
 ```bash
 # A) Groq's free hosted tier: get a key at console.groq.com/keys (no credit card)
@@ -33,29 +51,15 @@ claude mcp add voice-io -- \
   uvx --python 3.11 --from "voice-io-mcp[local-tts,local-stt] @ git+https://github.com/Furkiozknn/voice-io-mcp" voice-io-mcp
 ```
 
-`claude mcp list` should then show `voice-io: … ✓ Connected`. In Claude Code, ask *"Transcribe ~/Desktop/note.wav"* or *"Read this paragraph out loud"*. Audio is written to `output/` under the directory Claude Code was started in (set `VOICE_IO_OUTPUT_DIR` with another `-e` to change that).
+In Claude Code, ask *"Transcribe ~/Desktop/note.wav"* or *"Read this paragraph out loud"*. Audio is written to `output/` under the directory Claude Code was started in (set `VOICE_IO_OUTPUT_DIR` with another `-e` to change that).
 
-To see what the server can reach before connecting a client, run its health check directly:
+To see what the server can reach before connecting a client, run its health check (it also runs `--help` and `--version`):
 
 ```bash
-uvx --python 3.11 --from git+https://github.com/Furkiozknn/voice-io-mcp \
-  python -c "import asyncio, voice_io; print(asyncio.run(voice_io.check_provider_health()))"
+uvx --python 3.11 --from git+https://github.com/Furkiozknn/voice-io-mcp voice-io-mcp --check
 ```
 
-With no key and no extras (what you get from that command) it reports:
-
-```
-voice-io provider health check:
-
-text_to_speech:
-  FAIL groq/canopylabs/orpheus-v1-english - not configured
-  FAIL local:kokoro-82m - not installed (optional extra not enabled)
-speech_to_text:
-  FAIL groq/whisper-large-v3-turbo - not configured
-  FAIL local:faster-whisper - not installed (optional extra not enabled)
-```
-
-Each tool needs at least one `OK` line to work. A tool call that can't be served fails with `isError: true` and names both causes, for example `Speech-to-text failed (Groq: GROQ_API_KEY not set (environment or .env)) and no local fallback available (install the local-stt extra to enable one).` Working on the code instead? See [Setup](#-setup).
+With no key and no extras (what you get from that command) it prints the report shown in the demo and exits 1. It exits 0 when each tool has at least one `OK` line; with a key set it spends one tiny TTS and one STT request of free-tier quota. A tool call that can't be served fails with `isError: true` and names both causes, for example `Speech-to-text failed (Groq: GROQ_API_KEY not set (environment or .env)) and no local fallback available (install the local-stt extra to enable one).` To watch a session as a client sees it, `python scripts/probe.py --help` (from a clone) starts the server over stdio and prints `initialize`, `tools/list` and any `--call` you give it. Working on the code instead? See [Setup](#-setup).
 
 ## 📖 Table of Contents
 
@@ -189,7 +193,7 @@ uv run pytest tests/test_speech_to_text.py # one module
 uv run pytest -q -rs                       # quiet, with skip reasons
 ```
 
-Current result: `60 passed, 3 skipped`. The 3 skips are the real-model tests described below, and CI's `yerel` job runs them.
+Current result on Linux CI: `69 passed, 3 skipped`. The 3 skips are the real-model tests described below, and CI's `yerel` job runs them. On Windows the same suite gives `66 passed, 6 skipped` (measured 30 September 2026): the FIFO, `/dev/zero` and fd-diversion tests only exist on POSIX.
 
 The suite (`tests/`) mocks every `litellm` call — no `GROQ_API_KEY` or real network access needed, and nothing in it touches the network. It also exercises the *real*, unmocked local-fallback code paths against this repo's base test environment (where `kokoro`/`faster-whisper` are deliberately not installed, being optional extras), confirming both fallbacks fail closed — returning `False`/`None`, never raising — when their dependency is absent. The three real-model tests in `tests/test_local_integration.py` skip unless those optional extras *are* installed; a skip there is expected locally, not a failure. CI (`.github/workflows/ci.yml`) runs `uv run pytest` on Python 3.11 and 3.13 on every push/PR, plus a `yerel` job that installs both extras (and `espeak-ng`) and runs the real-model tests with skips treated as failures.
 

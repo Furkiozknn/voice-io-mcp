@@ -1,0 +1,7 @@
+# uvx --python 3.11 --from git+https://github.com/Furkiozknn/voice-io-mcp@yenileme/arayuz voice-io-mcp --version
+# tarih: 2026-09-30T02:31:43+0300; yenileme/arayuz dalindan (birlestirmeden sonra @dal kalkar); Windows 11, uv 0.12.5
+# cold = bos uv onbellegi; warm = ayni onbellek. Ilk sunucu yaniti (initialize) bunun uzerine ~4-6 s
+cold-1: 28.2 s exit 0 'voice-io-mcp 0.1.0'
+warm-1: 5.3 s exit 0 'voice-io-mcp 0.1.0'
+warm-2: 5.8 s exit 0 'voice-io-mcp 0.1.0'
+cold-2: 24.0 s exit 0 'voice-io-mcp 0.1.0'

@@ -5,6 +5,37 @@ Keep a Changelog 1.1.0, and versions follow Semantic Versioning. The version
 here must match `pyproject.toml` and `server.json`; the release workflow
 refuses a tag that does not.
 
+## [Unreleased]
+
+### Changed
+
+- The server answers the client's `initialize` in about 4 to 6 s instead of
+  about 17 s (Windows, measured): `litellm`, 14 s of the import, is now loaded
+  on the first tool call that needs it. Claude Code gives a server 30 s to
+  connect by default.
+- `voice-io-mcp --help`, `--version` and `--check` (the health report, exit 0
+  only when both tools have a provider). Before, any argument silently started
+  the server and waited on stdin.
+- The error for a path with no extension reads `has no extension` instead of
+  `has (no extension)`.
+
+### Fixed
+
+- `speech_to_text` on a directory named like audio answered "Permission
+  denied" on Windows; it now says the path is not a regular file, as on Linux.
+
+### Added
+
+- `scripts/probe.py`: an MCP client session over stdio (`initialize`,
+  `tools/list`, tool calls), and `scripts/demo-uret.py` which records the
+  README terminal demo from real command output (`docs/demo/komutlar.txt`).
+- `docs/DENETIM.md`, `docs/TASARIM.md`.
+
+### Removed
+
+- The 15-second reel (`docs/reel`): its generator is not in the repository.
+  It stays in git history.
+
 ## [0.1.0] - 2026-09-25
 
 First release.

@@ -24,7 +24,8 @@ INIT = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
 
 def first_sentence(text: str) -> str:
     flat = " ".join((text or "").split())
-    return flat.split(". ")[0].rstrip(".")[:88]
+    line = flat.split(". ")[0].rstrip(".")
+    return line if len(line) <= 88 else line[:85].rsplit(" ", 1)[0] + " ..."
 
 
 def main() -> int:
@@ -62,7 +63,7 @@ def main() -> int:
     read(1)
     took = time.monotonic() - started
     info = answers[1]["result"]["serverInfo"]
-    print(f"initialize  {info['name']} {info.get('version', '')}  answered after {took:.1f} s".replace("  answered", "  answered"))
+    print(f"initialize  {info['name']}  answered after {took:.1f} s")
     for r in requests:
         proc.stdin.write(json.dumps(r) + "\n")
     proc.stdin.flush()
