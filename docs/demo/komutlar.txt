@@ -1,0 +1,42 @@
+# voice-io-mcp terminal demo: real commands, real output
+# tarih: 2026-09-30T02:40:40+03:00
+# surum: 0.1.0 (bu depodan kurulu, PATH'teki voice-io-mcp)
+# ortam: GROQ_API_KEY yok, yerel ekstralar (kokoro, faster-whisper) kurulu degil
+# her komut bash -c 'set -o pipefail; ...' ile bos bir klasorde kosuldu; hicbir satir elle yazilmadi
+
+$ voice-io-mcp --version
+voice-io-mcp 0.1.0
+[cikis kodu 0] (3.70 s)
+
+$ voice-io-mcp --check
+voice-io provider health check:
+
+text_to_speech:
+  FAIL groq/canopylabs/orpheus-v1-english - not configured
+  FAIL local:kokoro-82m - not installed (optional extra not enabled)
+speech_to_text:
+  FAIL groq/whisper-large-v3-turbo - not configured
+  FAIL local:faster-whisper - not installed (optional extra not enabled)
+[cikis kodu 1] (3.83 s)
+
+$ python probe.py --call speech_to_text '{"audio_path": ".env"}' --call text_to_speech '{"text": "hello"}'
+initialize  voice-io  answered after 3.6 s
+tools/list  4 tools
+  text_to_speech        Convert text to speech, saved as a .wav file in the server's output directory ...
+  speech_to_text        Transcribe a local audio file to text
+  list_voices           List known Groq Orpheus voice names usable with text_to_speech's `voice` argument
+  check_provider_health Check whether Groq's hosted TTS/STT endpoints answer and whether each local ...
+
+tools/call speech_to_text {"audio_path": ".env"}
+  isError=true
+  Error executing tool speech_to_text: Rejected: path has no extension: not a recognized audio format (expected one of ['.flac', '.m4a', '.mp3', '.mp4', '.mpeg', '.mpga', '.ogg', '.wav', '.webm'])
+
+tools/call text_to_speech {"text": "hello"}
+  isError=true
+  Error executing tool text_to_speech: Text-to-speech failed (Groq: GROQ_API_KEY not set (environment or .env)) and no local fallback available (install the `local-tts` extra to enable one).
+[cikis kodu 0] (4.11 s)
+
+$ voice-io-mcp --bogus
+voice-io-mcp: unknown argument '--bogus'
+run `voice-io-mcp --help`
+[cikis kodu 2] (3.68 s)
