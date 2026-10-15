@@ -98,6 +98,14 @@ replies are unchanged, and errors still arrive as `isError` results.
 | `list_voices` | true | – | true | false | static list |
 | `check_provider_health` | true | – | false | **true** | spends a little free-tier quota on real probes |
 
+**Progress.** A long `text_to_speech` call is up to 20 hosted requests (Orpheus
+takes 200 characters each), and a first local run downloads model weights, so
+both audio tools send MCP progress notifications when the client asks for them
+(a `progressToken` in the request): one step per hosted request plus one for
+joining the parts, and a start/done pair around the STT upload and around each
+local model. Progress is best effort. A notification that cannot be delivered
+is dropped and never turns a working Groq call into a local fallback.
+
 ## 🔄 The fallback chain
 
 <img src="assets/fallback-chain.svg" alt="Both tools try their Groq tier first only when GROQ_API_KEY is set, and drop to a fully local model - Kokoro-82M for speech, faster-whisper for transcription - when it is unset or the hosted call fails, so the server works with no API keys at all. Transcription rejects unknown extensions and files over 25 MB before reading them." width="100%">

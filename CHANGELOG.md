@@ -47,6 +47,10 @@ refuses a tag that does not.
   The plain `text_to_speech()` / `speech_to_text()` functions keep returning
   text for the CLI and in-process callers. 15 tests in
   `tests/test_mcp_surface.py`.
+- Progress notifications (when the client sends a `progressToken`): one step
+  per hosted TTS request plus the join, and start/done around the STT upload
+  and the local models. Best effort: an undeliverable notification is dropped
+  and never causes a fallback. 9 tests in `tests/test_progress.py`.
 
 ## [0.1.0] - 2026-09-25
 

@@ -31,10 +31,12 @@ import wave
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import Annotated, Literal
 
 from dotenv import load_dotenv
 from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, ResourceLink, TextContent, ToolAnnotations
 from pydantic import BaseModel, Field
@@ -505,7 +507,26 @@ async def text_to_speech(
     return (await _text_to_speech(text, voice, output_format)).message
 
 
-async def _text_to_speech(text: str, voice: str, output_format: str) -> SpeechOutcome:
+ProgressFn = Callable[[float, float | None, str | None], Awaitable[None]]
+
+
+async def _notify(progress: ProgressFn | None, done: float, total: float | None, message: str) -> None:
+    """Send one progress notification, if the caller asked for them.
+
+    Never raises: a client that went away, or a transport hiccup, must not
+    turn a finished synthesis into a failure - or, inside the hosted loop,
+    into a needless fallback to the local model."""
+    if progress is None:
+        return
+    try:
+        await progress(done, total, message)
+    except Exception as e:  # noqa: BLE001 - progress is best effort by design
+        logger.debug("progress notification dropped: %s", e)
+
+
+async def _text_to_speech(
+    text: str, voice: str, output_format: str, progress: ProgressFn | None = None
+) -> SpeechOutcome:
     # ToolError, not ValueError: under mcp >= 2.1 a plain exception is
     # treated as a crash and masked to a generic "Error executing tool ..."
     # (verified against the installed SDK) - these two messages are designed
@@ -541,8 +562,10 @@ async def _text_to_speech(text: str, voice: str, output_format: str) -> SpeechOu
         parts = [hosted_path] if len(chunks) == 1 else [
             OUTPUT_DIR / f"speech_{stamp}.part{i}.wav" for i in range(len(chunks))
         ]
+        # One step per hosted request, plus one for joining the parts.
+        total = len(chunks) + (1 if len(chunks) > 1 else 0)
         try:
-            for chunk, part in zip(chunks, parts):
+            for index, (chunk, part) in enumerate(zip(chunks, parts), start=1):
                 response = await litellm.aspeech(
                     model=TTS_MODEL, voice=voice, input=chunk, response_format="wav", api_key=key,
                     timeout=HOSTED_CALL_TIMEOUT, max_retries=HOSTED_MAX_RETRIES,
@@ -550,8 +573,10 @@ async def _text_to_speech(text: str, voice: str, output_format: str) -> SpeechOu
                 # stream_to_file is a blocking disk write - run it off the event
                 # loop like every other I/O call here, not inline in async def.
                 await asyncio.to_thread(response.stream_to_file, str(part))
+                await _notify(progress, index, total, f"Groq: part {index} of {len(chunks)} synthesized")
             if len(parts) > 1:
                 await asyncio.to_thread(_join_wavs, parts, hosted_path)
+                await _notify(progress, total, total, f"joined {len(chunks)} parts")
             pieces = f", {len(chunks)} requests" if len(chunks) > 1 else ""
             return SpeechOutcome(
                 message=f"Audio saved to {hosted_path} (model: {TTS_MODEL}{pieces}){note}",
@@ -571,7 +596,13 @@ async def _text_to_speech(text: str, voice: str, output_format: str) -> SpeechOu
 
     local_path = OUTPUT_DIR / f"speech_{stamp}.wav"
     _local_errors.pop("tts", None)
+    # The local model gives no per-step signal, so the client hears when it
+    # starts (it can take a while, a first run also downloads weights) and
+    # when it is done.
+    await _notify(progress, 0, 1, f"local:{_LOCAL_TTS_MODEL_NAME}: synthesizing")
     ok = await asyncio.to_thread(_local_text_to_speech, text, local_path)
+    if ok:
+        await _notify(progress, 1, 1, f"local:{_LOCAL_TTS_MODEL_NAME}: done")
     if ok:
         return SpeechOutcome(
             message=f"Audio saved to {local_path} (model: local:{_LOCAL_TTS_MODEL_NAME}){note}",
@@ -610,7 +641,9 @@ async def speech_to_text(audio_path: str, language: str | None = None) -> str:
     return (await _speech_to_text(audio_path, language)).message
 
 
-async def _speech_to_text(audio_path: str, language: str | None) -> TranscriptOutcome:
+async def _speech_to_text(
+    audio_path: str, language: str | None, progress: ProgressFn | None = None
+) -> TranscriptOutcome:
     # ToolError for bad input and for "no tier could do it" alike, exactly
     # as text_to_speech does: the two tools must not disagree about how a
     # failed call is reported, and both cases are isError=true in MCP.
@@ -627,10 +660,12 @@ async def _speech_to_text(audio_path: str, language: str | None) -> TranscriptOu
     groq_error = None
     if key:
         try:
+            await _notify(progress, 0, 1, f"Groq: uploading {len(data) / (1024 * 1024):.1f}MB for transcription")
             response = await litellm.atranscription(
                 model=STT_MODEL, file=_named_buffer(data, name), language=language, api_key=key,
                 timeout=HOSTED_CALL_TIMEOUT, max_retries=HOSTED_MAX_RETRIES,
             )
+            await _notify(progress, 1, 1, "Groq: transcribed")
             return TranscriptOutcome(
                 message=f"{response.text}\n\n(model: {STT_MODEL})", text=response.text,
                 model=STT_MODEL, tier="hosted", language_hint=language,
@@ -640,8 +675,10 @@ async def _speech_to_text(audio_path: str, language: str | None) -> TranscriptOu
             logger.warning("Groq STT failed, falling back to local: %s", groq_error)
 
     _local_errors.pop("stt", None)
+    await _notify(progress, 0, 1, f"local:{_LOCAL_STT_MODEL_NAME}: transcribing")
     text = await asyncio.to_thread(_local_speech_to_text, _named_buffer(data, name))
     if text is not None:
+        await _notify(progress, 1, 1, f"local:{_LOCAL_STT_MODEL_NAME}: done")
         return TranscriptOutcome(
             message=f"{text}\n\n(model: local:{_LOCAL_STT_MODEL_NAME})", text=text,
             model=f"local:{_LOCAL_STT_MODEL_NAME}", tier="local", language_hint=language,
@@ -716,6 +753,13 @@ AUDIO_IN_ANNOTATIONS = ToolAnnotations(read_only_hint=True, idempotent_hint=Fals
 HEALTH_ANNOTATIONS = ToolAnnotations(read_only_hint=True, idempotent_hint=False, open_world_hint=True)
 
 
+def _progress_of(ctx: Context | None) -> ProgressFn | None:
+    """Progress notifications through the request's context. The SDK sends
+    them only when the client asked for progress (a progressToken in the
+    request); otherwise report_progress is a no-op, so this costs nothing."""
+    return ctx.report_progress if ctx is not None else None
+
+
 class SpeechResult(BaseModel):
     path: str = Field(description="absolute path of the generated .wav file")
     uri: str = Field(description="file:// URI of the same file (also sent as a resource_link)")
@@ -738,9 +782,9 @@ class TranscriptResult(BaseModel):
     description=inspect.cleandoc(text_to_speech.__doc__ or ""), annotations=AUDIO_OUT_ANNOTATIONS,
 )
 async def text_to_speech_tool(
-    text: str, voice: str = DEFAULT_VOICE, output_format: Literal["wav", "mp3"] = "wav"
+    text: str, voice: str = DEFAULT_VOICE, output_format: Literal["wav", "mp3"] = "wav", ctx: Context = None,
 ) -> Annotated[CallToolResult, SpeechResult]:
-    out = await _text_to_speech(text, voice, output_format)
+    out = await _text_to_speech(text, voice, output_format, _progress_of(ctx))
     path = out.path.resolve()
     structured = SpeechResult(
         path=str(path), uri=path.as_uri(), model=out.model, tier=out.tier,
@@ -759,8 +803,10 @@ async def text_to_speech_tool(
     name="speech_to_text", title="Speech to text",
     description=inspect.cleandoc(speech_to_text.__doc__ or ""), annotations=AUDIO_IN_ANNOTATIONS,
 )
-async def speech_to_text_tool(audio_path: str, language: str | None = None) -> Annotated[CallToolResult, TranscriptResult]:
-    out = await _speech_to_text(audio_path, language)
+async def speech_to_text_tool(
+    audio_path: str, language: str | None = None, ctx: Context = None
+) -> Annotated[CallToolResult, TranscriptResult]:
+    out = await _speech_to_text(audio_path, language, _progress_of(ctx))
     structured = TranscriptResult(text=out.text, model=out.model, tier=out.tier, language_hint=out.language_hint)
     return CallToolResult(
         content=[TextContent(type="text", text=out.message)],
