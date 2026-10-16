@@ -102,6 +102,12 @@ KNOWN_VOICES = ["autumn", "diana", "hannah", "austin", "daniel", "troy"]
 ALLOWED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".webm", ".mp4", ".mpeg", ".mpga"}
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
 
+# Opt-in: directories speech_to_text may read from, separated by os.pathsep
+# (":" on POSIX, ";" on Windows). Unset or empty keeps the historical
+# behaviour - any audio file the user can read. Read on every call, like
+# GROQ_API_KEY, rather than once at import.
+ALLOWED_ROOTS_ENV = "VOICE_IO_ALLOWED_ROOTS"
+
 # Short timeout for health probes specifically - these are meant to be a
 # quick "is it alive" check, not a real generation, so failing fast is correct.
 HEALTH_PROBE_TIMEOUT = 8.0
@@ -255,6 +261,29 @@ def _check_audio_suffix(name: str, shown: str) -> None:
         )
 
 
+def _allowed_roots() -> list[Path]:
+    """The resolved VOICE_IO_ALLOWED_ROOTS entries; empty means "no limit".
+
+    Each root is resolved like the audio path is, so a root given through a
+    symlink (macOS's /tmp -> /private/tmp) still contains the real files."""
+    raw = os.environ.get(ALLOWED_ROOTS_ENV, "")
+    roots = []
+    for entry in raw.split(os.pathsep):
+        entry = entry.strip()
+        if entry:
+            roots.append(Path(entry).expanduser().resolve())
+    return roots
+
+
+def _inside(real: Path, roots: list[Path]) -> bool:
+    return any(real == root or root in real.parents for root in roots)
+
+
+def _check_allowed_root(real: Path, audio_path: str, roots: list[Path]) -> None:
+    if roots and not _inside(real, roots):
+        raise ToolError(f"Rejected: {audio_path} is outside {ALLOWED_ROOTS_ENV}")
+
+
 def _read_audio_file(audio_path: str) -> tuple[bytes, str]:
     """Validate and read a caller-supplied audio path in one pass, returning
     (bytes, filename). Raises ToolError for anything that must not be read.
@@ -264,6 +293,9 @@ def _read_audio_file(audio_path: str) -> tuple[bytes, str]:
     - the extension is checked on the path as given AND on the file it
       finally resolves to, so `memo.wav -> ~/.env` (a symlink with an audio
       name) is refused instead of uploading the secret it points at;
+    - with VOICE_IO_ALLOWED_ROOTS set, the resolved path must lie inside one
+      of those roots, so neither `..` nor a symlink planted inside a root
+      can reach a file outside it;
     - the resolved path is opened with O_NOFOLLOW and O_NONBLOCK where the
       platform has them, so a last-moment symlink swap fails and a FIFO
       cannot hang the call;
@@ -278,10 +310,19 @@ def _read_audio_file(audio_path: str) -> tuple[bytes, str]:
         raise ToolError("Rejected: path contains a NUL byte")
     path = Path(audio_path).expanduser()
     _check_audio_suffix(path.name, "path")
+    roots = _allowed_roots()
     try:
         real = path.resolve(strict=True)
     except (OSError, RuntimeError):
+        # Outside the roots is said first, so a missing file there gets the
+        # same answer as an existing one: no probing beyond the roots.
+        if roots:
+            try:
+                _check_allowed_root(path.resolve(), audio_path, roots)
+            except (OSError, RuntimeError):
+                pass
         raise ToolError(f"File not found: {audio_path}") from None
+    _check_allowed_root(real, audio_path, roots)
     if real.name != path.name:
         _check_audio_suffix(real.name, f"link target {real.name!r}")
 
@@ -597,7 +638,9 @@ async def speech_to_text(audio_path: str, language: str | None = None) -> str:
         audio_path: Absolute path to a local audio file (mp3/wav/m4a/flac/
             ogg/webm/mp4/mpeg/mpga, any case), max 25MB. A symlink is
             followed only if its target also has an audio extension;
-            directories, FIFOs and devices are refused.
+            directories, FIFOs and devices are refused. If
+            VOICE_IO_ALLOWED_ROOTS is set, the resolved file must be inside
+            one of those directories.
         language: Optional ISO-639-1 language hint (e.g. "en"). Ignored by
             the local fallback, which auto-detects language.
 

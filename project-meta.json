@@ -54,8 +54,8 @@
     ]
   },
   "tests": {
-    "count": 69,
-    "source": "`69 passed, 3 skipped` on Linux CI (the 3 real-model tests run in CI's `yerel` job)",
+    "count": 79,
+    "source": "`79 passed, 3 skipped` on Linux CI (the 3 real-model tests run in CI's `yerel` job)",
     "measured": "2026-09-30"
   },
   "ci": {
