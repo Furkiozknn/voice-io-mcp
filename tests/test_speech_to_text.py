@@ -278,3 +278,109 @@ async def test_an_installed_but_failing_local_tier_is_not_told_to_install_itself
     message = str(excinfo.value)
     assert "local fallback (faster-whisper) failed too: 403 Forbidden from huggingface.co" in message
     assert "install the" not in message
+
+
+# --- VOICE_IO_ALLOWED_ROOTS: opt-in confinement of the files that may be read.
+
+
+@pytest.fixture
+def rooted(tmp_path, monkeypatch):
+    """An allowed root, a sibling outside it, and one audio file in each."""
+    inside = tmp_path / "memos"
+    outside = tmp_path / "memos-private"  # shares a string prefix with the root
+    inside.mkdir()
+    outside.mkdir()
+    (inside / "ok.wav").write_bytes(b"RIFF-inside")
+    (outside / "secret.wav").write_bytes(b"RIFF-outside")
+    monkeypatch.setenv("VOICE_IO_ALLOWED_ROOTS", str(inside))
+    return inside, outside
+
+
+@pytest.mark.asyncio
+async def test_a_file_inside_an_allowed_root_is_read(groq_key, fake_atranscription, rooted):
+    inside, _ = rooted
+    mock = fake_atranscription(text="inside the root")
+
+    result = await voice_io.speech_to_text(audio_path=str(inside / "ok.wav"))
+
+    assert "inside the root" in result
+    assert mock.await_args.kwargs["file"].read() == b"RIFF-inside"
+
+
+@pytest.mark.asyncio
+async def test_a_file_outside_every_allowed_root_is_refused_before_upload(groq_key, fake_atranscription, rooted):
+    _, outside = rooted
+    mock = fake_atranscription(text="should never be called")
+
+    with pytest.raises(ToolError, match="outside VOICE_IO_ALLOWED_ROOTS"):
+        await voice_io.speech_to_text(audio_path=str(outside / "secret.wav"))
+
+    mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dot_dot_cannot_climb_out_of_an_allowed_root(groq_key, fake_atranscription, rooted):
+    inside, _ = rooted
+    mock = fake_atranscription(text="should never be called")
+
+    with pytest.raises(ToolError, match="outside VOICE_IO_ALLOWED_ROOTS"):
+        await voice_io.speech_to_text(audio_path=str(inside / ".." / "memos-private" / "secret.wav"))
+
+    mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_symlink_inside_a_root_cannot_reach_audio_outside_it(groq_key, fake_atranscription, rooted):
+    """The root check runs on the resolved path, so a link planted inside the
+    root is judged by where it lands, not by where it sits."""
+    inside, outside = rooted
+    mock = fake_atranscription(text="should never be called")
+    link = inside / "alias.wav"
+    _symlink_or_skip(link, outside / "secret.wav")
+
+    with pytest.raises(ToolError, match="outside VOICE_IO_ALLOWED_ROOTS"):
+        await voice_io.speech_to_text(audio_path=str(link))
+
+    mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_missing_file_outside_the_roots_is_not_probed(rooted):
+    # "File not found" would tell the caller whether a file outside the roots
+    # exists; with roots set, being outside them is the whole answer.
+    _, outside = rooted
+    with pytest.raises(ToolError, match="outside VOICE_IO_ALLOWED_ROOTS"):
+        await voice_io.speech_to_text(audio_path=str(outside / "missing.wav"))
+
+
+@pytest.mark.asyncio
+async def test_a_missing_file_inside_a_root_is_still_not_found(rooted):
+    inside, _ = rooted
+    with pytest.raises(ToolError, match="File not found"):
+        await voice_io.speech_to_text(audio_path=str(inside / "missing.wav"))
+
+
+@pytest.mark.asyncio
+async def test_several_roots_are_separated_by_the_platform_path_separator(
+    groq_key, fake_atranscription, rooted, monkeypatch
+):
+    inside, outside = rooted
+    monkeypatch.setenv("VOICE_IO_ALLOWED_ROOTS", os.pathsep.join([str(inside), "", str(outside)]))
+    fake_atranscription(text="second root")
+
+    assert "second root" in await voice_io.speech_to_text(audio_path=str(outside / "secret.wav"))
+
+
+@pytest.mark.parametrize("value", [None, "", f" {os.pathsep} "])
+@pytest.mark.asyncio
+async def test_unset_or_empty_roots_keep_the_unrestricted_default(
+    groq_key, fake_atranscription, rooted, monkeypatch, value
+):
+    _, outside = rooted
+    if value is None:
+        monkeypatch.delenv("VOICE_IO_ALLOWED_ROOTS")
+    else:
+        monkeypatch.setenv("VOICE_IO_ALLOWED_ROOTS", value)
+    fake_atranscription(text="no roots configured")
+
+    assert "no roots configured" in await voice_io.speech_to_text(audio_path=str(outside / "secret.wav"))

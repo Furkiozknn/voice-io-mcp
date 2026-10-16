@@ -7,6 +7,14 @@ refuses a tag that does not.
 
 ## [Unreleased]
 
+### Added
+
+- `VOICE_IO_ALLOWED_ROOTS` (opt-in): directories `speech_to_text` may read
+  from, separated by `os.pathsep`. When set, the resolved path of the audio
+  file (after `..` and symlinks) must be inside one of them, otherwise the
+  call is refused before anything is read or uploaded. Unset or empty keeps
+  the previous behaviour. 10 new tests in `tests/test_speech_to_text.py`.
+
 ### Changed
 
 - The server answers the client's `initialize` in about 4 to 6 s instead of
