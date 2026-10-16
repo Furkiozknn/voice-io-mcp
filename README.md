@@ -83,6 +83,21 @@ With no key and no extras (what you get from that command) it prints the report 
 | 🗣️ `list_voices` | List known Groq Orpheus voice names for `text_to_speech`'s `voice` argument | — (static list) | — |
 | 🩺 `check_provider_health` | Liveness probe for both hosted endpoints (spends one tiny TTS + one STT request of free-tier quota per call) + local-dependency availability check | both | both |
 
+**What a client gets besides the text.** Every tool has a title and MCP behaviour
+hints. `text_to_speech` and `speech_to_text` also publish an `outputSchema` and
+return `structuredContent`: for speech `path`, `uri`, `model`, `tier` (`hosted` /
+`local`), `requests` and `format_substituted`; for transcripts `text`, `model`,
+`tier` and `language_hint`. `text_to_speech` adds a `resource_link` to the `.wav`
+it wrote, so a client can offer the file instead of a path string. The text
+replies are unchanged, and errors still arrive as `isError` results.
+
+| Tool | `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` | Why |
+|---|---|---|---|---|---|
+| `text_to_speech` | false | false | false | **true** | writes a new uniquely named file, never overwrites; text goes to Groq when a key is set |
+| `speech_to_text` | true | – | false | **true** | reads one validated file; its bytes go to Groq when a key is set |
+| `list_voices` | true | – | true | false | static list |
+| `check_provider_health` | true | – | false | **true** | spends a little free-tier quota on real probes |
+
 ## 🔄 The fallback chain
 
 <img src="assets/fallback-chain.svg" alt="Both tools try their Groq tier first only when GROQ_API_KEY is set, and drop to a fully local model - Kokoro-82M for speech, faster-whisper for transcription - when it is unset or the hosted call fails, so the server works with no API keys at all. Transcription rejects unknown extensions and files over 25 MB before reading them." width="100%">
