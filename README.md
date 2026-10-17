@@ -4,7 +4,7 @@
 
 # voice-io-mcp
 
-**Two MCP tools for Claude Code: `text_to_speech` and `speech_to_text`. Groq's free hosted endpoints first, a local model when there is no key or Groq is down.**
+**Four MCP tools for Claude Code: `text_to_speech` and `speech_to_text`, plus `list_voices` and `check_provider_health`. Groq's free hosted endpoints first, a local model when there is no key or Groq is down.**
 
 </div>
 
@@ -12,7 +12,7 @@
 claude mcp add voice-io -e GROQ_API_KEY=your-key -- uvx --python 3.11 --from git+https://github.com/Furkiozknn/voice-io-mcp voice-io-mcp
 ```
 
-**What it needs, honestly:** [`uv`](https://docs.astral.sh/uv/) and Claude Code, plus one of two things to make actual audio. Either a free Groq key ([console.groq.com/keys](https://console.groq.com/keys), no card), or the local models: `voice-io-mcp[local-tts,local-stt]`, about 6 GB of downloads on Linux because Kokoro pulls in torch (see [Setup](#-setup)). With neither, the server still connects and every call answers with an error that says what to add, as in the demo below. Nothing is on PyPI yet, so uv installs from GitHub.
+**What it needs, honestly:** [`uv`](https://docs.astral.sh/uv/) and Claude Code, plus one of two things to make actual audio. Either a free Groq key ([console.groq.com/keys](https://console.groq.com/keys), no card), or the local models: `voice-io-mcp[local-tts,local-stt]`, about 6 GB of downloads on Linux because Kokoro pulls in torch (see [Setup](#%EF%B8%8F-setup)). With neither, the server still connects and every call answers with an error that says what to add, as in the demo below. Nothing is on PyPI yet, so uv installs from GitHub.
 
 <p align="center"><img src="docs/demo/demo.gif" alt="A terminal: voice-io-mcp --version, the health check listing four providers as FAIL because no key and no local extras are set, an MCP client session over stdio that lists four tools, refuses a path named .env and reports that text-to-speech has no provider, and the message for a wrong flag" width="760"></p>
 <p align="center"><sub>16 seconds, 4 commands, no key set, nothing typed by hand: <a href="docs/demo/komutlar.txt">the exact commands, output and exit codes</a>, replayed. <a href="docs/demo/demo.mp4">MP4</a></sub></p>
@@ -30,7 +30,7 @@ The first result is quick once uv has it: from an empty uv cache `uvx` took 24.0
 [![License: MIT](https://img.shields.io/badge/license-MIT-76b900?style=flat-square)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-76b900?style=flat-square)](pyproject.toml)
 [![MCP Server](https://img.shields.io/badge/MCP-server-76b900?style=flat-square)](https://modelcontextprotocol.io)
-[![Cost](https://img.shields.io/badge/cost-%240-76b900?style=flat-square)](#-setup)
+[![Cost](https://img.shields.io/badge/cost-%240-76b900?style=flat-square)](#%EF%B8%8F-setup)
 
 </div>
 
@@ -59,15 +59,15 @@ To see what the server can reach before connecting a client, run its health chec
 uvx --python 3.11 --from git+https://github.com/Furkiozknn/voice-io-mcp voice-io-mcp --check
 ```
 
-With no key and no extras (what you get from that command) it prints the report shown in the demo and exits 1. It exits 0 when each tool has at least one `OK` line; with a key set it spends one tiny TTS and one STT request of free-tier quota. A tool call that can't be served fails with `isError: true` and names both causes, for example `Speech-to-text failed (Groq: GROQ_API_KEY not set (environment or .env)) and no local fallback available (install the local-stt extra to enable one).` To watch a session as a client sees it, `python scripts/probe.py --help` (from a clone) starts the server over stdio and prints `initialize`, `tools/list` and any `--call` you give it. Working on the code instead? See [Setup](#-setup).
+With no key and no extras (what you get from that command) it prints the report shown in the demo and exits 1. It exits 0 when each tool has at least one `OK` line; with a key set it spends one tiny TTS and one STT request of free-tier quota. A tool call that can't be served fails with `isError: true` and names both causes, for example `Speech-to-text failed (Groq: GROQ_API_KEY not set (environment or .env)) and no local fallback available (install the local-stt extra to enable one).` To watch a session as a client sees it, `python scripts/probe.py --help` (from a clone) starts the server over stdio and prints `initialize`, `tools/list` and any `--call` you give it. Working on the code instead? See [Setup](#%EF%B8%8F-setup).
 
 ## 📖 Table of Contents
 
 - [Quick start](#-quick-start)
 - [Tools](#-tools)
 - [The fallback chain](#-the-fallback-chain)
-- [Setup](#-setup)
-- [Example usage](#-example-usage)
+- [Setup](#%EF%B8%8F-setup)
+- [Example usage](#%EF%B8%8F-example-usage)
 - [Architecture](#-architecture)
 - [Development](#-development)
 - [Testing](#-testing)
@@ -170,7 +170,7 @@ claude mcp add --transport stdio voice-io -- uv run --project /path/to/this/repo
 
 ```
 "Read this changelog entry out loud"
-→ text_to_speech  → saved to output/speech_20260901_120000.wav (model: groq/canopylabs/orpheus-v1-english)
+→ text_to_speech  → saved to output/speech_20260901_120000_481902_3f9a1c.wav (model: groq/canopylabs/orpheus-v1-english)
 
 "Transcribe this voice memo at C:\Users\me\Desktop\note.wav"
 → speech_to_text  → returns the transcript (model: groq/whisper-large-v3-turbo)
