@@ -7,6 +7,14 @@ refuses a tag that does not.
 
 ## [Unreleased]
 
+### Added
+
+- `VOICE_IO_ALLOWED_ROOTS` (opt-in): directories `speech_to_text` may read
+  from, separated by `os.pathsep`. When set, the resolved path of the audio
+  file (after `..` and symlinks) must be inside one of them, otherwise the
+  call is refused before anything is read or uploaded. Unset or empty keeps
+  the previous behaviour. 10 new tests in `tests/test_speech_to_text.py`.
+
 ### Changed
 
 - The server answers the client's `initialize` in about 4 to 6 s instead of
@@ -35,6 +43,18 @@ refuses a tag that does not.
 
 - The 15-second reel (`docs/reel`): its generator is not in the repository.
   It stays in git history.
+
+### Added: MCP surface
+
+- Titles and `ToolAnnotations` on all four tools (both audio tools are
+  open-world, since text or audio bytes go to Groq when a key is set;
+  `text_to_speech` is not destructive, it never overwrites a file).
+- `text_to_speech` and `speech_to_text` publish an `outputSchema` and return
+  `structuredContent` next to the unchanged text; `text_to_speech` also
+  returns a `resource_link` (`file://…`, `audio/wav`) to the file it wrote.
+  The plain `text_to_speech()` / `speech_to_text()` functions keep returning
+  text for the CLI and in-process callers. 15 tests in
+  `tests/test_mcp_surface.py`.
 
 ## [0.1.0] - 2026-09-25
 

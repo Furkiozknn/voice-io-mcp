@@ -26,14 +26,18 @@ import stat
 import sys
 import threading
 import uuid
+import inspect
 import wave
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from dotenv import load_dotenv
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import CallToolResult, ResourceLink, TextContent, ToolAnnotations
+from pydantic import BaseModel, Field
 
 load_dotenv()
 
@@ -97,6 +101,12 @@ KNOWN_VOICES = ["autumn", "diana", "hannah", "austin", "daniel", "troy"]
 # ceiling.
 ALLOWED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".webm", ".mp4", ".mpeg", ".mpga"}
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
+
+# Opt-in: directories speech_to_text may read from, separated by os.pathsep
+# (":" on POSIX, ";" on Windows). Unset or empty keeps the historical
+# behaviour - any audio file the user can read. Read on every call, like
+# GROQ_API_KEY, rather than once at import.
+ALLOWED_ROOTS_ENV = "VOICE_IO_ALLOWED_ROOTS"
 
 # Short timeout for health probes specifically - these are meant to be a
 # quick "is it alive" check, not a real generation, so failing fast is correct.
@@ -251,6 +261,29 @@ def _check_audio_suffix(name: str, shown: str) -> None:
         )
 
 
+def _allowed_roots() -> list[Path]:
+    """The resolved VOICE_IO_ALLOWED_ROOTS entries; empty means "no limit".
+
+    Each root is resolved like the audio path is, so a root given through a
+    symlink (macOS's /tmp -> /private/tmp) still contains the real files."""
+    raw = os.environ.get(ALLOWED_ROOTS_ENV, "")
+    roots = []
+    for entry in raw.split(os.pathsep):
+        entry = entry.strip()
+        if entry:
+            roots.append(Path(entry).expanduser().resolve())
+    return roots
+
+
+def _inside(real: Path, roots: list[Path]) -> bool:
+    return any(real == root or root in real.parents for root in roots)
+
+
+def _check_allowed_root(real: Path, audio_path: str, roots: list[Path]) -> None:
+    if roots and not _inside(real, roots):
+        raise ToolError(f"Rejected: {audio_path} is outside {ALLOWED_ROOTS_ENV}")
+
+
 def _read_audio_file(audio_path: str) -> tuple[bytes, str]:
     """Validate and read a caller-supplied audio path in one pass, returning
     (bytes, filename). Raises ToolError for anything that must not be read.
@@ -260,6 +293,9 @@ def _read_audio_file(audio_path: str) -> tuple[bytes, str]:
     - the extension is checked on the path as given AND on the file it
       finally resolves to, so `memo.wav -> ~/.env` (a symlink with an audio
       name) is refused instead of uploading the secret it points at;
+    - with VOICE_IO_ALLOWED_ROOTS set, the resolved path must lie inside one
+      of those roots, so neither `..` nor a symlink planted inside a root
+      can reach a file outside it;
     - the resolved path is opened with O_NOFOLLOW and O_NONBLOCK where the
       platform has them, so a last-moment symlink swap fails and a FIFO
       cannot hang the call;
@@ -274,10 +310,19 @@ def _read_audio_file(audio_path: str) -> tuple[bytes, str]:
         raise ToolError("Rejected: path contains a NUL byte")
     path = Path(audio_path).expanduser()
     _check_audio_suffix(path.name, "path")
+    roots = _allowed_roots()
     try:
         real = path.resolve(strict=True)
     except (OSError, RuntimeError):
+        # Outside the roots is said first, so a missing file there gets the
+        # same answer as an existing one: no probing beyond the roots.
+        if roots:
+            try:
+                _check_allowed_root(path.resolve(), audio_path, roots)
+            except (OSError, RuntimeError):
+                pass
         raise ToolError(f"File not found: {audio_path}") from None
+    _check_allowed_root(real, audio_path, roots)
     if real.name != path.name:
         _check_audio_suffix(real.name, f"link target {real.name!r}")
 
@@ -456,7 +501,27 @@ async def _probe_groq_stt() -> tuple[bool, str]:
     return True, "ok"
 
 
-@mcp.tool()
+@dataclass(frozen=True)
+class SpeechOutcome:
+    """What one text_to_speech call produced; `message` is the text reply."""
+
+    message: str
+    path: Path
+    model: str
+    tier: str  # "hosted" | "local"
+    requests: int
+    format_substituted: bool
+
+
+@dataclass(frozen=True)
+class TranscriptOutcome:
+    message: str
+    text: str
+    model: str
+    tier: str  # "hosted" | "local"
+    language_hint: str | None
+
+
 async def text_to_speech(
     text: str, voice: str = DEFAULT_VOICE, output_format: Literal["wav", "mp3"] = "wav"
 ) -> str:
@@ -478,6 +543,10 @@ async def text_to_speech(
         output_format: "wav" (the default). "mp3" is still accepted for
             compatibility, but both tiers now write .wav and the result says so.
     """
+    return (await _text_to_speech(text, voice, output_format)).message
+
+
+async def _text_to_speech(text: str, voice: str, output_format: str) -> SpeechOutcome:
     # ToolError, not ValueError: under mcp >= 2.1 a plain exception is
     # treated as a crash and masked to a generic "Error executing tool ..."
     # (verified against the installed SDK) - these two messages are designed
@@ -525,7 +594,11 @@ async def text_to_speech(
             if len(parts) > 1:
                 await asyncio.to_thread(_join_wavs, parts, hosted_path)
             pieces = f", {len(chunks)} requests" if len(chunks) > 1 else ""
-            return f"Audio saved to {hosted_path} (model: {TTS_MODEL}{pieces}){note}"
+            return SpeechOutcome(
+                message=f"Audio saved to {hosted_path} (model: {TTS_MODEL}{pieces}){note}",
+                path=hosted_path, model=TTS_MODEL, tier="hosted", requests=len(chunks),
+                format_substituted=bool(note),
+            )
         except Exception as e:
             groq_error = _redact(str(e), key)
             # A partial/corrupt file can exist if the write started before
@@ -541,14 +614,17 @@ async def text_to_speech(
     _local_errors.pop("tts", None)
     ok = await asyncio.to_thread(_local_text_to_speech, text, local_path)
     if ok:
-        return f"Audio saved to {local_path} (model: local:{_LOCAL_TTS_MODEL_NAME}){note}"
+        return SpeechOutcome(
+            message=f"Audio saved to {local_path} (model: local:{_LOCAL_TTS_MODEL_NAME}){note}",
+            path=local_path, model=f"local:{_LOCAL_TTS_MODEL_NAME}", tier="local", requests=1,
+            format_substituted=bool(note),
+        )
 
     raise _unavailable(
         "Text-to-speech", groq_error, "local-tts", "kokoro", _LOCAL_TTS_MODEL_NAME, _local_errors.get("tts")
     )
 
 
-@mcp.tool()
 async def speech_to_text(audio_path: str, language: str | None = None) -> str:
     """Transcribe a local audio file to text.
 
@@ -562,7 +638,9 @@ async def speech_to_text(audio_path: str, language: str | None = None) -> str:
         audio_path: Absolute path to a local audio file (mp3/wav/m4a/flac/
             ogg/webm/mp4/mpeg/mpga, any case), max 25MB. A symlink is
             followed only if its target also has an audio extension;
-            directories, FIFOs and devices are refused.
+            directories, FIFOs and devices are refused. If
+            VOICE_IO_ALLOWED_ROOTS is set, the resolved file must be inside
+            one of those directories.
         language: Optional ISO-639-1 language hint (e.g. "en"). Ignored by
             the local fallback, which auto-detects language.
 
@@ -572,6 +650,10 @@ async def speech_to_text(audio_path: str, language: str | None = None) -> str:
             - the same contract text_to_speech uses for its own invalid
             arguments - and also when neither tier could transcribe it.
     """
+    return (await _speech_to_text(audio_path, language)).message
+
+
+async def _speech_to_text(audio_path: str, language: str | None) -> TranscriptOutcome:
     # ToolError for bad input and for "no tier could do it" alike, exactly
     # as text_to_speech does: the two tools must not disagree about how a
     # failed call is reported, and both cases are isError=true in MCP.
@@ -592,7 +674,10 @@ async def speech_to_text(audio_path: str, language: str | None = None) -> str:
                 model=STT_MODEL, file=_named_buffer(data, name), language=language, api_key=key,
                 timeout=HOSTED_CALL_TIMEOUT, max_retries=HOSTED_MAX_RETRIES,
             )
-            return f"{response.text}\n\n(model: {STT_MODEL})"
+            return TranscriptOutcome(
+                message=f"{response.text}\n\n(model: {STT_MODEL})", text=response.text,
+                model=STT_MODEL, tier="hosted", language_hint=language,
+            )
         except Exception as e:
             groq_error = _redact(str(e), key)
             logger.warning("Groq STT failed, falling back to local: %s", groq_error)
@@ -600,14 +685,18 @@ async def speech_to_text(audio_path: str, language: str | None = None) -> str:
     _local_errors.pop("stt", None)
     text = await asyncio.to_thread(_local_speech_to_text, _named_buffer(data, name))
     if text is not None:
-        return f"{text}\n\n(model: local:{_LOCAL_STT_MODEL_NAME})"
+        return TranscriptOutcome(
+            message=f"{text}\n\n(model: local:{_LOCAL_STT_MODEL_NAME})", text=text,
+            model=f"local:{_LOCAL_STT_MODEL_NAME}", tier="local", language_hint=language,
+        )
 
     raise _unavailable(
         "Speech-to-text", groq_error, "local-stt", "faster_whisper", _LOCAL_STT_MODEL_NAME, _local_errors.get("stt")
     )
 
 
-@mcp.tool()
+@mcp.tool(title="List voices", annotations=ToolAnnotations(
+    read_only_hint=True, idempotent_hint=True, open_world_hint=False))
 async def list_voices() -> str:
     """List known Groq Orpheus voice names usable with text_to_speech's
     `voice` argument. Static list transcribed from Groq's public API docs,
@@ -617,7 +706,6 @@ async def list_voices() -> str:
     return "\n".join(KNOWN_VOICES)
 
 
-@mcp.tool()
 async def check_provider_health() -> str:
     """Check whether Groq's hosted TTS/STT endpoints answer and whether each
     local fallback's optional dependency is installed - without loading a
@@ -646,6 +734,89 @@ async def check_provider_health() -> str:
     lines.append(f"  {'OK ' if local_stt_ok else 'FAIL'} local:{_LOCAL_STT_MODEL_NAME} - {local_stt_detail}")
 
     return "\n".join(lines)
+
+
+# --- What an MCP client sees --------------------------------------------
+# The functions above keep returning the text they always returned (the CLI,
+# in-process callers and the tests use them). The tools registered below wrap
+# them with three things the MCP spec offers and this server did not use:
+#
+# * behaviour hints (ToolAnnotations). Both audio tools are open-world: with
+#   GROQ_API_KEY set the text, or the audio file's bytes, go to Groq.
+#   speech_to_text only reads; text_to_speech writes a new file and never
+#   overwrites one (unique names), so it is not destructive. Neither is
+#   idempotent: each call makes a fresh request and a fresh file.
+# * structuredContent with a published outputSchema, so a client gets the
+#   path, model and tier without parsing "Audio saved to ... (model: ...)".
+# * a resource_link to the generated .wav (spec 2025-06-18), so a client can
+#   offer the file itself instead of a path string.
+# Errors still raise ToolError, i.e. they arrive as isError results.
+
+AUDIO_OUT_ANNOTATIONS = ToolAnnotations(
+    read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=True
+)
+AUDIO_IN_ANNOTATIONS = ToolAnnotations(read_only_hint=True, idempotent_hint=False, open_world_hint=True)
+HEALTH_ANNOTATIONS = ToolAnnotations(read_only_hint=True, idempotent_hint=False, open_world_hint=True)
+
+
+class SpeechResult(BaseModel):
+    path: str = Field(description="absolute path of the generated .wav file")
+    uri: str = Field(description="file:// URI of the same file (also sent as a resource_link)")
+    format: Literal["wav"] = "wav"
+    model: str = Field(description="model that produced the audio, e.g. groq/... or local:kokoro-82m")
+    tier: Literal["hosted", "local"]
+    requests: int = Field(description="hosted requests used (text is sent in 200-character pieces)")
+    format_substituted: bool = Field(description="true when mp3 was requested and wav was written")
+
+
+class TranscriptResult(BaseModel):
+    text: str
+    model: str
+    tier: Literal["hosted", "local"]
+    language_hint: str | None = Field(description="the language argument as given; null when auto-detected")
+
+
+@mcp.tool(
+    name="text_to_speech", title="Text to speech",
+    description=inspect.cleandoc(text_to_speech.__doc__ or ""), annotations=AUDIO_OUT_ANNOTATIONS,
+)
+async def text_to_speech_tool(
+    text: str, voice: str = DEFAULT_VOICE, output_format: Literal["wav", "mp3"] = "wav"
+) -> Annotated[CallToolResult, SpeechResult]:
+    out = await _text_to_speech(text, voice, output_format)
+    path = out.path.resolve()
+    structured = SpeechResult(
+        path=str(path), uri=path.as_uri(), model=out.model, tier=out.tier,
+        requests=out.requests, format_substituted=out.format_substituted,
+    )
+    return CallToolResult(
+        content=[
+            TextContent(type="text", text=out.message),
+            ResourceLink(type="resource_link", uri=path.as_uri(), name=path.name, mime_type="audio/wav"),
+        ],
+        structured_content=structured.model_dump(mode="json"),
+    )
+
+
+@mcp.tool(
+    name="speech_to_text", title="Speech to text",
+    description=inspect.cleandoc(speech_to_text.__doc__ or ""), annotations=AUDIO_IN_ANNOTATIONS,
+)
+async def speech_to_text_tool(audio_path: str, language: str | None = None) -> Annotated[CallToolResult, TranscriptResult]:
+    out = await _speech_to_text(audio_path, language)
+    structured = TranscriptResult(text=out.text, model=out.model, tier=out.tier, language_hint=out.language_hint)
+    return CallToolResult(
+        content=[TextContent(type="text", text=out.message)],
+        structured_content=structured.model_dump(mode="json"),
+    )
+
+
+@mcp.tool(
+    name="check_provider_health", title="Check provider health",
+    description=inspect.cleandoc(check_provider_health.__doc__ or ""), annotations=HEALTH_ANNOTATIONS,
+)
+async def check_provider_health_tool() -> str:
+    return await check_provider_health()
 
 
 _HELP = """voice-io-mcp - text-to-speech and speech-to-text as an MCP server (stdio).
